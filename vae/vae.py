@@ -18,7 +18,7 @@ from scipy.stats import kde
 from sklearn.decomposition import PCA
 from torch.nn import functional as F
 from tqdm import tqdm
-from flow import Flow
+from flow import Flow, GaussianBase, MaskedCouplingLayer
 
 
 class GaussianPrior(nn.Module):
@@ -74,20 +74,18 @@ class MixtureGaussianPrior(nn.Module):
         return gmm
     
 class FlowPrior(nn.Module):
-    def __init__(self, M, K):
+    def __init__(self, base, transformations):
         """
         Define a Mixture of Gaussian prior distribution with zero mean and unit variance.
 
         Parameters:
-            M: [int] 
-                Dimension of the latent space.
-            K: [int]
-                Number of Gaussian components in the mixture.
+            base: [torch.nn.Module] 
+                The base distribution for the flow.
+            transformations: [list]
+                List of transformations for the flow.
         """
         super(FlowPrior, self).__init__()
-        self.M = M
-        self.K = K
-        self.flow = Flow(M, K)
+        self.flow = Flow(base,transformations)
     
     def forward(self):
         """
@@ -216,9 +214,7 @@ class VAE(nn.Module):
         log_prob = self.decoder(z).log_prob(x) # in 32, 28, 28 out dim: batch
 
         # kl divergence estimation
-        if not isinstance(self.prior, MixtureGaussianPrior):
-            kl = td.kl_divergence(q, self.prior()).sum(-1)
-        else:
+        if isinstance(self.prior, MixtureGaussianPrior) or isinstance(self.prior, FlowPrior):
             # use monte carlo estimation
             k = 256
             z_samples = q.rsample(torch.Size([k]))  # dim: k, batch, latent_dim
@@ -226,6 +222,8 @@ class VAE(nn.Module):
             prior_log_prob = self.prior().log_prob(z_samples) # dim: k, batch
             
             kl = torch.mean(z_samples_log_prob - prior_log_prob, axis=0)  # dim: batch
+        else:
+            kl = td.kl_divergence(q, self.prior()).sum(-1)
         
         return torch.mean(log_prob - kl, dim=0)
 
@@ -306,7 +304,7 @@ if __name__ == "__main__":
     from torchvision.utils import make_grid, save_image
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'eval', 'vis', 'msample'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--prior', type=str, default='gaus', choices=['gaus', 'mog'], help='Prior distribution (default: %(default)s)')
+    parser.add_argument('--prior', type=str, default='gaus', choices=['gaus', 'mog', 'flow'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--model', type=str, default='vae/model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='vae/samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -337,6 +335,25 @@ if __name__ == "__main__":
         prior = GaussianPrior(M)
     elif args.prior == 'mog':
         prior = MixtureGaussianPrior(M, 5)
+    elif args.prior == 'flow':
+        base = GaussianBase(M)
+        # Define transformations
+        
+        num_transformations = 5*4
+        num_hidden = 8*2
+
+        # Make a mask that is 1 for the first half of the features and 0 for the second half
+        mask = torch.zeros((M,))
+        mask[M//2:] = 1
+
+        transformations =[]
+        for i in range(num_transformations):
+            mask = (1-mask) # Flip the mask
+            scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M), nn.Tanh())
+            translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
+            transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
+        
+        prior = FlowPrior(base,transformations)
 
     # Define encoder and decoder networks
     encoder_net = nn.Sequential(
@@ -433,64 +450,64 @@ if __name__ == "__main__":
                 y[i*args.batch_size:(i+1)*args.batch_size] = y_sample.numpy()
             
 
-            pca = PCA(n_components=2)
-            if M > 2:
-                z = pca.fit_transform(z)  # ensure z is on CPU for PCA and plotting
-            else:
-                z = z
-            
-            # sample prior distribution
-            n_samples = 1024*2
-            prior_z = model.prior().sample(torch.Size([n_samples]))
-            if M > 2:
-                prior_z = pca.transform(prior_z.cpu())  # ensure prior_z is on CPU for PCA and plotting
-            else: 
-                prior_z = prior_z.cpu().numpy()
+        pca = PCA(n_components=2)
+        if M > 2:
+            z = pca.fit_transform(z)  # ensure z is on CPU for PCA and plotting
+        else:
+            z = z
+        
+        # sample prior distribution
+        n_samples = 1024*2
+        prior_z = model.prior().sample(torch.Size([n_samples]))
+        if M > 2:
+            prior_z = pca.transform(prior_z.cpu())  # ensure prior_z is on CPU for PCA and plotting
+        else: 
+            prior_z = prior_z.cpu().numpy()
 
-            # Plotting
-            fig, ax = plt.subplots()
+        # Plotting
+        fig, ax = plt.subplots()
 
-            # Determine the bounds for the contour plot
-            # It should be the max of both prior_z and z
-            xmin = min(np.min(prior_z[:, 0]), np.min(z[:, 0]))
-            xmax = max(np.max(prior_z[:, 0]), np.max(z[:, 0]))
-            ymin = min(np.min(prior_z[:, 1]), np.min(z[:, 1]))
-            ymax = max(np.max(prior_z[:, 1]), np.max(z[:, 1]))
+        # Determine the bounds for the contour plot
+        # It should be the max of both prior_z and z
+        xmin = min(np.min(prior_z[:, 0]), np.min(z[:, 0]))
+        xmax = max(np.max(prior_z[:, 0]), np.max(z[:, 0]))
+        ymin = min(np.min(prior_z[:, 1]), np.min(z[:, 1]))
+        ymax = max(np.max(prior_z[:, 1]), np.max(z[:, 1]))
 
-            # Create a grid of points with the determined bounds
-            xx, yy = np.mgrid[xmin:xmax:100j, ymin:ymax:100j]
+        # Create a grid of points with the determined bounds
+        xx, yy = np.mgrid[xmin:xmax:100j, ymin:ymax:100j]
 
-            # Calculate the density of the points
-            positions = np.vstack([xx.ravel(), yy.ravel()])
-            values = np.vstack([prior_z[:, 0], prior_z[:, 1]])
-            kernel = stats.gaussian_kde(values)
-            f = np.reshape(kernel(positions).T, xx.shape)
+        # Calculate the density of the points
+        positions = np.vstack([xx.ravel(), yy.ravel()])
+        values = np.vstack([prior_z[:, 0], prior_z[:, 1]])
+        kernel = stats.gaussian_kde(values)
+        f = np.reshape(kernel(positions).T, xx.shape)
 
-            # Plot the density contour
-            ax.contourf(xx, yy, f, cmap='viridis')
+        # Plot the density contour
+        ax.contourf(xx, yy, f, cmap='viridis')
 
-            # Plot the data, with labels colored by y label
-            scatter = ax.scatter(z[:, 0], z[:, 1], c=y, cmap='tab10')
-            legend1 = ax.legend(*scatter.legend_elements(), title="Classes")
-            ax.add_artist(legend1)
+        # Plot the data, with labels colored by y label
+        scatter = ax.scatter(z[:, 0], z[:, 1], c=y, cmap='tab10')
+        legend1 = ax.legend(*scatter.legend_elements(), title="Classes")
+        ax.add_artist(legend1)
 
-            # Set the limits of the axes to the bounds
-            ax.set_xlim(xmin, xmax)
-            ax.set_ylim(ymin, ymax) 
-            
-            
-            # sets title
-            # Generate samples
-            model.eval()
-            loss_list = []
-            with torch.no_grad():
-                data_iter = iter(mnist_test_loader)
-                for x in tqdm(data_iter):
-                    x = x[0].to(args.device)
-                    loss = model(x)
-                    loss_list.append(loss.item())
-            
-            ax.set_title(f'Samples from approximate posterior - {args.prior} Prior \n ELBO: {sum(loss_list)/len(loss_list)}')
-            ax.set_xlabel('Principal Component 1')
-            ax.set_ylabel('Principal Component 2')
-            fig.savefig(args.samples)         
+        # Set the limits of the axes to the bounds
+        ax.set_xlim(xmin, xmax)
+        ax.set_ylim(ymin, ymax) 
+        
+        
+        # sets title
+        # Generate samples
+        model.eval()
+        loss_list = []
+        with torch.no_grad():
+            data_iter = iter(mnist_test_loader)
+            for x in tqdm(data_iter):
+                x = x[0].to(args.device)
+                loss = model(x)
+                loss_list.append(loss.item())
+        
+        ax.set_title(f'Samples from approximate posterior - {args.prior} Prior \n ELBO: {sum(loss_list)/len(loss_list)}')
+        ax.set_xlabel('Principal Component 1')
+        ax.set_ylabel('Principal Component 2')
+        fig.savefig(args.samples)         
