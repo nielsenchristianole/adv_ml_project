@@ -13,12 +13,12 @@ import torch
 import torch.distributions as td
 import torch.nn as nn
 import torch.utils.data
-from flow import Flow
 from scipy import stats
 from scipy.stats import kde
 from sklearn.decomposition import PCA
 from torch.nn import functional as F
 from tqdm import tqdm
+from flow import Flow
 
 
 class GaussianPrior(nn.Module):
@@ -58,9 +58,9 @@ class MixtureGaussianPrior(nn.Module):
         super(MixtureGaussianPrior, self).__init__()
         self.M = M
         self.K = K
-        self.mean = nn.Parameter(torch.zeros(self.K, self.M), requires_grad=True)
+        self.mean = nn.Parameter(torch.randn(self.K, self.M), requires_grad=True)
         self.std = nn.Parameter(torch.ones(self.K, self.M), requires_grad=True)
-        self.w = nn.Parameter(torch.ones(self.K)*1/self.K, requires_grad=True)
+        self.w = nn.Parameter(torch.ones(self.K)/self.K, requires_grad=True)
 
     def forward(self):
         """
@@ -72,6 +72,31 @@ class MixtureGaussianPrior(nn.Module):
         comp = td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
         gmm = td.MixtureSameFamily(td.Categorical(probs=self.w), comp)
         return gmm
+    
+class FlowPrior(nn.Module):
+    def __init__(self, M, K):
+        """
+        Define a Mixture of Gaussian prior distribution with zero mean and unit variance.
+
+        Parameters:
+            M: [int] 
+                Dimension of the latent space.
+            K: [int]
+                Number of Gaussian components in the mixture.
+        """
+        super(FlowPrior, self).__init__()
+        self.M = M
+        self.K = K
+        self.flow = Flow(M, K)
+    
+    def forward(self):
+        """
+        Return the prior distribution.
+
+        Returns:
+        prior: [torch.distributions.Distribution]
+        """
+        return self.flow
 
 class GaussianEncoder(nn.Module):
     def __init__(self, encoder_net):
@@ -138,6 +163,7 @@ class MultiGaussianDecoder(nn.Module):
         """
         super(MultiGaussianDecoder, self).__init__()
         self.decoder_net = decoder_net
+        #self.std = nn.Parameter(torch.ones(28, 28)*0.2, requires_grad=True)
         self.std = nn.Parameter(torch.ones(28, 28)*0.2, requires_grad=True)
 
     def forward(self, z):
@@ -149,7 +175,9 @@ class MultiGaussianDecoder(nn.Module):
            A tensor of dimension `(batch_size, M)`, where M is the dimension of the latent space.
         """
         logits = self.decoder_net(z)
-        return td.Independent(td.MultivariateNormal(logits, torch.diag_embed(torch.exp(self.std))), 2)
+        #return td.Independent(td.MultivariateNormal(logits, torch.diag_embed(torch.exp(self.std))), 2)
+        return td.Independent(td.Normal(logits, self.std), 2)
+
 
 
 class VAE(nn.Module):
@@ -279,13 +307,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'eval', 'vis', 'msample'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus', 'mog'], help='Prior distribution (default: %(default)s)')
-    parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
-    parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
+    parser.add_argument('--model', type=str, default='vae/model.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser.add_argument('--samples', type=str, default='vae/samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=32, metavar='N', help='dimension of latent variable (default: %(default)s)')
-    parser.add_argument('-nb', '--notbinary', type=bool, metavar='N', help='use non-binary images (default: %(default)s)')
+    parser.add_argument('--notBinarize', action='store_true', help='binarize the data (default: True)')
 
     args = parser.parse_args()
     print('# Options')
@@ -294,12 +322,11 @@ if __name__ == "__main__":
 
     device = args.device
 
-    if not args.notbinary:
-        # Load MNIST as binarized at 'thresshold' and create data loaders
-        thresshold = 0.5
-        data_transform = transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: (thresshold < x).float().squeeze())])
+    if args.notBinarize:
+        data_transform = transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x.float().squeeze())])
     else:
-        data_transform = transforms.Compose([transforms.ToTensor()])
+        threshold = 0.5
+        data_transform = transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: (threshold < x).float().squeeze())])
         
     mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=True, download=True, transform=data_transform), batch_size=args.batch_size, shuffle=True)
     mnist_test_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=False, download=True,transform=data_transform), batch_size=args.batch_size, shuffle=True)
@@ -330,10 +357,10 @@ if __name__ == "__main__":
         nn.Unflatten(-1, (28, 28))
     )
 
-    if not args.notbinary:
-        decoder = BernoulliDecoder(decoder_net)
-    else:
+    if args.notBinarize:
         decoder = MultiGaussianDecoder(decoder_net)
+    else:
+        decoder = BernoulliDecoder(decoder_net)
     
     # Define VAE model
     encoder = GaussianEncoder(encoder_net)
@@ -359,6 +386,7 @@ if __name__ == "__main__":
             samples = (model.sample(64)).cpu() 
             save_image(samples.view(64, 1, 28, 28), args.samples)
     elif args.mode == 'msample':
+        # samples the mean of the decoder
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
 
         # Generate samples
@@ -384,7 +412,6 @@ if __name__ == "__main__":
         print(f'ELBO: {sum(loss_list)/len(loss_list)}')
         
     elif args.mode == 'vis':
-        # Assuming model and mnist_test_loader are already defined and initialized
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
 
         # Generate samples
@@ -392,20 +419,28 @@ if __name__ == "__main__":
         loss_list = []
         with torch.no_grad():
             data_iter = iter(mnist_test_loader)
-            x, y = next(data_iter)
-            x = x.to(args.device)
-            q = model.encoder(x)
-            z = q.rsample()  # batch, dim: 64, 32
+            
+            # gets samples from multiple batches
+            n_batches = 20
+            z = np.zeros((args.batch_size*n_batches, M))
+            y = np.zeros(args.batch_size*n_batches)
+            for i in range(n_batches):
+                x, y_sample = next(data_iter)
+                x = x.to(args.device)
+                q = model.encoder(x)
+                z_sample = q.rsample()  # batch, dim: 32, 32
+                z[i*args.batch_size:(i+1)*args.batch_size] = z_sample.cpu().numpy()
+                y[i*args.batch_size:(i+1)*args.batch_size] = y_sample.numpy()
             
 
             pca = PCA(n_components=2)
             if M > 2:
-                z = pca.fit_transform(z.cpu())  # ensure z is on CPU for PCA and plotting
+                z = pca.fit_transform(z)  # ensure z is on CPU for PCA and plotting
             else:
-                z = z.cpu().numpy()
+                z = z
             
             # sample prior distribution
-            n_samples = 1024
+            n_samples = 1024*2
             prior_z = model.prior().sample(torch.Size([n_samples]))
             if M > 2:
                 prior_z = pca.transform(prior_z.cpu())  # ensure prior_z is on CPU for PCA and plotting
@@ -443,4 +478,19 @@ if __name__ == "__main__":
             ax.set_xlim(xmin, xmax)
             ax.set_ylim(ymin, ymax) 
             
-            fig.savefig('pca.png')         
+            
+            # sets title
+            # Generate samples
+            model.eval()
+            loss_list = []
+            with torch.no_grad():
+                data_iter = iter(mnist_test_loader)
+                for x in tqdm(data_iter):
+                    x = x[0].to(args.device)
+                    loss = model(x)
+                    loss_list.append(loss.item())
+            
+            ax.set_title(f'Samples from approximate posterior - {args.prior} Prior \n ELBO: {sum(loss_list)/len(loss_list)}')
+            ax.set_xlabel('Principal Component 1')
+            ax.set_ylabel('Principal Component 2')
+            fig.savefig(args.samples)         
