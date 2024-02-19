@@ -327,7 +327,7 @@ if __name__ == "__main__":
         data_transform = transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: (threshold < x).float().squeeze())])
         
     mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=True, download=True, transform=data_transform), batch_size=args.batch_size, shuffle=True)
-    mnist_test_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=False, download=True,transform=data_transform), batch_size=args.batch_size, shuffle=True)
+    mnist_test_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=False, download=True,transform=data_transform), batch_size=args.batch_size, shuffle=True, drop_last=True)
 
     # Define prior distribution
     M = args.latent_dim
@@ -458,7 +458,7 @@ if __name__ == "__main__":
         
         # sample prior distribution
         n_samples = 1024*2
-        prior_z = model.prior().sample(torch.Size([n_samples]))
+        prior_z = model.prior().sample(torch.Size([n_samples])).detach()
         if M > 2:
             prior_z = pca.transform(prior_z.cpu())  # ensure prior_z is on CPU for PCA and plotting
         else: 
