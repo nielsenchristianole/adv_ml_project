@@ -13,12 +13,12 @@ import torch
 import torch.distributions as td
 import torch.nn as nn
 import torch.utils.data
+from flow import Flow, GaussianBase, MaskedCouplingLayer
 from scipy import stats
 from scipy.stats import kde
 from sklearn.decomposition import PCA
 from torch.nn import functional as F
 from tqdm import tqdm
-from flow import Flow, GaussianBase, MaskedCouplingLayer
 
 
 class GaussianPrior(nn.Module):
@@ -223,7 +223,7 @@ class VAE(nn.Module):
             
             kl = torch.mean(z_samples_log_prob - prior_log_prob, axis=0)  # dim: batch
         else:
-            kl = td.kl_divergence(q, self.prior()).sum(-1)
+            kl = td.kl_divergence(q, self.prior())
         
         return torch.mean(log_prob - kl, dim=0)
 
