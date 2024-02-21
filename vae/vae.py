@@ -43,6 +43,40 @@ class GaussianPrior(nn.Module):
         prior: [torch.distributions.Distribution]
         """
         return td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
+    
+class VampPrior(nn.Module):
+    def __init__(self, K, encoder):
+        """
+        Define a Gaussian prior distribution with zero mean and unit variance.
+
+                Parameters:
+        M: [int] 
+           Dimension of the latent space.
+        K: [int]
+            Number of mixture of the approximate posterior
+        """
+        super(VampPrior, self).__init__()
+        self.M = M
+        self.K = K
+        self.encoder = encoder
+        self.mean = nn.Parameter(torch.randn(self.K, 28,28), requires_grad=True)
+        self.w = nn.Parameter(torch.ones(self.K)/self.K, requires_grad=False)
+
+    def forward(self):
+        """
+        Return the prior distribution.
+
+        Returns:
+        prior: [torch.distributions.Distribution]
+        """
+        #q_dist = self.encoder(self.mean) # dim: self.K, latent_dim
+        
+        #return q_dist # dim: latent_dim
+    
+        comp = self.encoder(self.mean)
+        mix = td.Categorical(probs=self.w)
+        gmm = td.MixtureSameFamily(mix, comp)
+        return gmm
 
 class MixtureGaussianPrior(nn.Module):
     def __init__(self, M, K):
@@ -208,13 +242,12 @@ class VAE(nn.Module):
            n_samples: [int]
            Number of samples to use for the Monte Carlo estimate of the ELBO.
         """
-        # elbo = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0) # dim: 64
         q = self.encoder(x)  # returns: distribution
         z = q.rsample() # dim: batch, latent_dim:  64, 32
         log_prob = self.decoder(z).log_prob(x) # in 32, 28, 28 out dim: batch
 
         # kl divergence estimation
-        if isinstance(self.prior, MixtureGaussianPrior) or isinstance(self.prior, FlowPrior):
+        if isinstance(self.prior, MixtureGaussianPrior) or isinstance(self.prior, FlowPrior) or isinstance(self.prior, VampPrior):
             # use monte carlo estimation
             k = 256
             z_samples = q.rsample(torch.Size([k]))  # dim: k, batch, latent_dim
@@ -223,9 +256,9 @@ class VAE(nn.Module):
             
             kl = torch.mean(z_samples_log_prob - prior_log_prob, axis=0)  # dim: batch
         else:
-            kl = td.kl_divergence(q, self.prior())
+            kl = td.kl_divergence(q, self.prior()) # dim: batch
         
-        return torch.mean(log_prob - kl, dim=0)
+        return torch.mean(log_prob - kl, dim=0) # dim: number
 
     def sample(self, n_samples=1):
         """
@@ -304,7 +337,7 @@ if __name__ == "__main__":
     from torchvision.utils import make_grid, save_image
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'eval', 'vis', 'msample'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--prior', type=str, default='gaus', choices=['gaus', 'mog', 'flow'], help='Prior distribution (default: %(default)s)')
+    parser.add_argument('--prior', type=str, default='gaus', choices=['gaus', 'mog', 'flow','vampprior'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--model', type=str, default='vae/model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='vae/samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -319,6 +352,7 @@ if __name__ == "__main__":
         print(key, '=', value)
 
     device = args.device
+    M = args.latent_dim
 
     if args.notBinarize:
         data_transform = transforms.Compose([transforms.ToTensor(), transforms.Lambda(lambda x: x.float().squeeze())])
@@ -328,33 +362,7 @@ if __name__ == "__main__":
         
     mnist_train_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=True, download=True, transform=data_transform), batch_size=args.batch_size, shuffle=True)
     mnist_test_loader = torch.utils.data.DataLoader(datasets.MNIST('data/', train=False, download=True,transform=data_transform), batch_size=args.batch_size, shuffle=True, drop_last=True)
-
-    # Define prior distribution
-    M = args.latent_dim
-    if args.prior == 'gaus':
-        prior = GaussianPrior(M)
-    elif args.prior == 'mog':
-        prior = MixtureGaussianPrior(M, 5)
-    elif args.prior == 'flow':
-        base = GaussianBase(M)
-        # Define transformations
-        
-        num_transformations = 5*4
-        num_hidden = 8*2
-
-        # Make a mask that is 1 for the first half of the features and 0 for the second half
-        mask = torch.zeros((M,))
-        mask[M//2:] = 1
-
-        transformations =[]
-        for i in range(num_transformations):
-            mask = (1-mask) # Flip the mask
-            scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M), nn.Tanh())
-            translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
-            transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
-        
-        prior = FlowPrior(base,transformations)
-
+    
     # Define encoder and decoder networks
     encoder_net = nn.Sequential(
         nn.Flatten(),
@@ -381,6 +389,35 @@ if __name__ == "__main__":
     
     # Define VAE model
     encoder = GaussianEncoder(encoder_net)
+    
+    # Define prior distribution
+    if args.prior == 'gaus':
+        prior = GaussianPrior(M)
+    elif args.prior == 'mog':
+        prior = MixtureGaussianPrior(M, 5)
+    elif args.prior == 'vampprior':
+        prior = VampPrior(15, encoder)
+    elif args.prior == 'flow':
+        base = GaussianBase(M)
+        # Define transformations
+        
+        num_transformations = 5*4
+        num_hidden = 8*2
+
+        # Make a mask that is 1 for the first half of the features and 0 for the second half
+        mask = torch.zeros((M,))
+        mask[M//2:] = 1
+
+        transformations =[]
+        for i in range(num_transformations):
+            mask = (1-mask) # Flip the mask
+            scale_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M), nn.Tanh())
+            translation_net = nn.Sequential(nn.Linear(M, num_hidden), nn.ReLU(), nn.Linear(num_hidden, M))
+            transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
+        
+        prior = FlowPrior(base,transformations)
+
+    
     model = VAE(prior, decoder, encoder).to(device)
 
     # Choose mode to run
