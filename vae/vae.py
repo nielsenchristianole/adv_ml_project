@@ -313,7 +313,10 @@ def train(model, optimizer, data_loader, epochs, device):
 
     total_steps = len(data_loader)*epochs
     progress_bar = tqdm(range(total_steps), desc="Training")
-
+    i = 0
+    rolling_average = 10
+    average = np.zeros(rolling_average)
+    
     for epoch in range(epochs):
         data_iter = iter(data_loader)
         for x in data_iter:
@@ -324,8 +327,10 @@ def train(model, optimizer, data_loader, epochs, device):
             optimizer.step()
 
             # Update progress bar
-            progress_bar.set_postfix(loss=loss.item(), epoch=f"{epoch+1}/{epochs}")
+            average[i % rolling_average] =loss.item()
+            progress_bar.set_postfix(loss=np.mean(average), epoch=f"{epoch+1}/{epochs}")
             progress_bar.update()
+            i += 1
 
 
 if __name__ == "__main__":
