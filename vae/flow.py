@@ -6,6 +6,7 @@
 
 import pdb
 
+import numpy as np
 import torch
 import torch.distributions as td
 import torch.nn as nn
@@ -76,7 +77,6 @@ class MaskedCouplingLayer(nn.Module):
                                                 + self.translation_net(torch.mul(self.mask, z))
                                                 )
         
-        
         log_det_J = torch.sum((1-self.mask) * self.scale_net(torch.mul(self.mask, z)), dim = 1)
         return x, log_det_J
     
@@ -94,7 +94,7 @@ class MaskedCouplingLayer(nn.Module):
             The sum of the log determinants of the Jacobian matrices of the inverse transformations.
         """
         z = torch.mul(self.mask, x) + torch.mul(1-self.mask,torch.mul(x-self.translation_net(torch.mul(self.mask, x)),torch.exp(-self.scale_net(torch.mul(self.mask, x)))))
-        log_det_J = -torch.sum((1-self.mask) * self.scale_net(torch.mul(self.mask, z)), dim = 1)
+        log_det_J = -torch.sum((1-self.mask) * self.scale_net(torch.mul(self.mask, x)), dim = 1)
 
         return z, log_det_J
 
@@ -216,7 +216,10 @@ def train(model, optimizer, data_loader, epochs, device):
 
     total_steps = len(data_loader)*epochs
     progress_bar = tqdm(range(total_steps), desc="Training")
-
+    i = 0
+    rolling_average = 2
+    average = np.zeros(rolling_average)
+    
     for epoch in range(epochs):
         data_iter = iter(data_loader)
         for x,_ in data_iter:
@@ -227,8 +230,10 @@ def train(model, optimizer, data_loader, epochs, device):
             optimizer.step()
 
             # Update progress bar
-            progress_bar.set_postfix(loss=f"⠀{loss.item():12.4f}", epoch=f"{epoch+1}/{epochs}")
+            average[i % rolling_average] =loss.item()
+            progress_bar.set_postfix(rolling_loss=np.mean(average), loss=loss.item(), epoch=f"{epoch+1}/{epochs}")
             progress_bar.update()
+            i += 1
 
 
 if __name__ == "__main__":
@@ -283,7 +288,7 @@ if __name__ == "__main__":
     mask = torch.Tensor([1 if (i+j) % 2 == 0 else 0 for i in range(28) for j in range(28)])
     
     num_transformations = 5*4
-    num_hidden = 8*2
+    num_hidden = 2**9
 
     # Make a mask that is 1 for the first half of the features and 0 for the second half
     mask = torch.zeros((D,))
@@ -298,8 +303,18 @@ if __name__ == "__main__":
     
     for i in range(num_transformations):
         mask = (1-mask) # Flip the mask
-        scale_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D), nn.Tanh())
-        translation_net = nn.Sequential(nn.Linear(D, num_hidden), nn.ReLU(), nn.Linear(num_hidden, D))
+        scale_net = nn.Sequential(nn.Linear(D, num_hidden), 
+                                  nn.ReLU(), 
+                                  nn.Linear(num_hidden, num_hidden), 
+                                  nn.ReLU(), 
+                                  nn.Linear(num_hidden, D), 
+                                  nn.Tanh())
+        translation_net = nn.Sequential(nn.Linear(D, num_hidden), 
+                                        nn.ReLU(), 
+                                        nn.Linear(num_hidden, num_hidden), 
+                                        nn.ReLU(), 
+                                        nn.Linear(num_hidden, D))
+        
         transformations.append(MaskedCouplingLayer(scale_net, translation_net, mask))
 
     # Define flow model
