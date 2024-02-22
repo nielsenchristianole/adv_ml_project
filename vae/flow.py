@@ -217,7 +217,7 @@ def train(model, optimizer, data_loader, epochs, device):
     total_steps = len(data_loader)*epochs
     progress_bar = tqdm(range(total_steps), desc="Training")
     i = 0
-    rolling_average = 2
+    rolling_average = 5
     average = np.zeros(rolling_average)
     
     for epoch in range(epochs):
@@ -246,12 +246,12 @@ if __name__ == "__main__":
     from torchvision.utils import save_image
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'sample'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--data', type=str, default='tg', choices=['tg', 'cb', 'mnist'], help='toy dataset to use {tg: two Gaussians, cb: chequerboard} (default: %(default)s)')
+    parser.add_argument('--data', type=str, default='mnist', choices=['tg', 'cb', 'mnist'], help='toy dataset to use {tg: two Gaussians, cb: chequerboard} (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
-    parser.add_argument('--batch-size', type=int, default=10000, metavar='N', help='batch size for training (default: %(default)s)')
-    parser.add_argument('--epochs', type=int, default=1, metavar='N', help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--batch-size', type=int, default=5000, metavar='N', help='batch size for training (default: %(default)s)')
+    parser.add_argument('--epochs', type=int, default=20, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--lr', type=float, default=1e-3, metavar='V', help='learning rate for training (default: %(default)s)')
 
     args = parser.parse_args()
@@ -287,8 +287,8 @@ if __name__ == "__main__":
     transformations =[]
     mask = torch.Tensor([1 if (i+j) % 2 == 0 else 0 for i in range(28) for j in range(28)])
     
-    num_transformations = 5*4
-    num_hidden = 2**9
+    num_transformations = 15
+    num_hidden = 2**8
 
     # Make a mask that is 1 for the first half of the features and 0 for the second half
     mask = torch.zeros((D,))
@@ -304,6 +304,8 @@ if __name__ == "__main__":
     for i in range(num_transformations):
         mask = (1-mask) # Flip the mask
         scale_net = nn.Sequential(nn.Linear(D, num_hidden), 
+                                  nn.ReLU(), 
+                                  nn.Linear(num_hidden, num_hidden), 
                                   nn.ReLU(), 
                                   nn.Linear(num_hidden, num_hidden), 
                                   nn.ReLU(), 
