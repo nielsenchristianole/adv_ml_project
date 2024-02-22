@@ -104,7 +104,7 @@ class MixtureGaussianPrior(nn.Module):
         prior: [torch.distributions.Distribution]
         """
         comp = td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
-        gmm = td.MixtureSameFamily(td.Categorical(probs=self.w), comp)
+        gmm = td.MixtureSameFamily(td.Categorical(probs=F.sigmoid(self.w)), comp)
         return gmm
     
 class FlowPrior(nn.Module):
@@ -252,7 +252,9 @@ class VAE(nn.Module):
             k = 256
             z_samples = q.rsample(torch.Size([k]))  # dim: k, batch, latent_dim
             z_samples_log_prob = q.log_prob(z_samples) # dim: k, batch
-            prior_log_prob = self.prior().log_prob(z_samples) # dim: k, batch
+            prior_log_prob = self.prior().log_prob(z_samples.view(-1,z_samples.shape[2])) # dim: (k*batch)
+            prior_log_prob = prior_log_prob.view(k, -1) # dim: k, batch
+
             
             kl = torch.mean(z_samples_log_prob - prior_log_prob, axis=0)  # dim: batch
         else:
@@ -314,7 +316,7 @@ def train(model, optimizer, data_loader, epochs, device):
     total_steps = len(data_loader)*epochs
     progress_bar = tqdm(range(total_steps), desc="Training")
     i = 0
-    rolling_average = 10
+    rolling_average = 30
     average = np.zeros(rolling_average)
     
     for epoch in range(epochs):

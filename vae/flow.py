@@ -165,8 +165,8 @@ class Flow(nn.Module):
         log_prob: [torch.Tensor]
             The log probability of the data under the flow.
         """
-        z, log_det_J = self.inverse(x)
-        return self.base().log_prob(z) + log_det_J
+        z, log_det_J = self.inverse(x)# 256, 32, 32, ; # 256, 32
+        return self.base().log_prob(z) + log_det_J # 256, 32
     
     def sample(self, sample_shape=(1,)):
         """
