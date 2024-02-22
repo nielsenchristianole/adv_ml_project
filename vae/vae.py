@@ -493,52 +493,25 @@ if __name__ == "__main__":
                 z[i*args.batch_size:(i+1)*args.batch_size] = z_sample.cpu().numpy()
                 y[i*args.batch_size:(i+1)*args.batch_size] = y_sample.numpy()
             
-
-        pca = PCA(n_components=2)
-        if M > 2:
-            z = pca.fit_transform(z)  # ensure z is on CPU for PCA and plotting
-        else:
-            z = z
+        if M != 2:
+            assert False, "Only 2D latent space is supported for visualization" 
         
-        # sample prior distribution
-        n_samples = 1024*2
-        prior_z = model.prior().sample(torch.Size([n_samples])).detach()
-        if M > 2:
-            prior_z = pca.transform(prior_z.cpu())  # ensure prior_z is on CPU for PCA and plotting
-        else: 
-            prior_z = prior_z.cpu().numpy()
-
-        # Plotting
         fig, ax = plt.subplots()
-
-        # Determine the bounds for the contour plot
-        # It should be the max of both prior_z and z
-        xmin = min(np.min(prior_z[:, 0]), np.min(z[:, 0]))
-        xmax = max(np.max(prior_z[:, 0]), np.max(z[:, 0]))
-        ymin = min(np.min(prior_z[:, 1]), np.min(z[:, 1]))
-        ymax = max(np.max(prior_z[:, 1]), np.max(z[:, 1]))
-
+        
         # Create a grid of points with the determined bounds
-        xx, yy = np.mgrid[xmin:xmax:100j, ymin:ymax:100j]
+        xx, yy = np.mgrid[-10:10:300j, -10:10:300j]
 
-        # Calculate the density of the points
-        positions = np.vstack([xx.ravel(), yy.ravel()])
-        values = np.vstack([prior_z[:, 0], prior_z[:, 1]])
-        kernel = stats.gaussian_kde(values)
-        f = np.reshape(kernel(positions).T, xx.shape)
+        # Calculate log_prob for model.prior()
+        grid_points = torch.tensor(np.c_[xx.ravel(), yy.ravel()], dtype=torch.float32)
+        log_probs = model.prior().log_prob(grid_points).detach().numpy()
 
-        # Plot the density contour
-        ax.contourf(xx, yy, f, cmap='viridis')
-
+        # Plot using contourf
+        ax.contourf(xx, yy, np.exp(log_probs.reshape(xx.shape)), cmap='viridis')
+        
         # Plot the data, with labels colored by y label
         scatter = ax.scatter(z[:, 0], z[:, 1], c=y, cmap='tab10')
         legend1 = ax.legend(*scatter.legend_elements(), title="Classes")
         ax.add_artist(legend1)
-
-        # Set the limits of the axes to the bounds
-        ax.set_xlim(xmin, xmax)
-        ax.set_ylim(ymin, ymax) 
-        
         
         # sets title
         # Generate samples
@@ -554,4 +527,6 @@ if __name__ == "__main__":
         ax.set_title(f'Samples from approximate posterior - {args.prior} Prior \n ELBO: {sum(loss_list)/len(loss_list)}')
         ax.set_xlabel('Principal Component 1')
         ax.set_ylabel('Principal Component 2')
-        fig.savefig(args.samples)         
+        fig.savefig(args.samples)    
+        
+        
