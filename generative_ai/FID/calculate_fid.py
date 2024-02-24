@@ -41,7 +41,7 @@ def calculate_fid(get_encoding: Callable[[], torch.Tensor], num_samples: int=10_
             sample = get_encoding().to(device)
             batch_size = min(sample.shape[0], num_samples - num_sampled)
             encoding = model.encode(sample)
-            fake_encodings[num_sampled:num_sampled+batch_size] = encoding.cpu().numpy()
+            fake_encodings[num_sampled:num_sampled+batch_size] = encoding.cpu().numpy()[:batch_size]
             num_sampled += batch_size
             pbar.update(batch_size)
         pbar.close()
