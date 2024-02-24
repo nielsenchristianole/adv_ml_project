@@ -334,6 +334,40 @@ def train(model, optimizer, data_loader, epochs, device):
             progress_bar.update()
             i += 1
 
+def plot_data(ax, X, y, alpha=0.8, title=None):
+    ### CREDIT: FROM BAYESIAN MACHINE LEARNING 02477 ###
+    colors = ['b', 'r', 'g', 'c', 'm', 'y', 'k', 'gray', 'orange', 'purple']
+    labels = ['digit=0', 'digit=1', 'digit=2', 'digit=3', 'digit=4', 'digit=5', 'digit=6', 'digit=7', 'digit=8', 'digit=9']
+
+    for i in range(10):
+        ax.plot(X[y==i, 0], X[y==i, 1], colors[i], label=labels[i], linestyle='None', marker='o')
+
+    ax.set(xlabel='Axis 1', ylabel='Axis 2')
+    ax.legend()
+
+    if title:
+        ax.set_title(title, fontweight='bold')
+        
+        
+def plot_distribution(ax, density_fun, color=None, visibility=1, label=None, title=None, num_points = 100):
+    ### CREDIT: FROM BAYESIAN MACHINE LEARNING 02477 ###
+    
+    # create grid for parameters (a,b)
+    a_array = np.linspace(-5, 5, num_points)
+    b_array = np.linspace(-5, 5, num_points)
+    A_array, B_array = np.meshgrid(a_array, b_array)   
+    
+    # form array with all combinations of (a,b) in our grid
+    AB = torch.tensor(np.column_stack((A_array.ravel(), B_array.ravel())))
+    
+    # evaluate density for every point in the grid and reshape bac
+    Z = density_fun(AB).detach().cpu().numpy()
+    Z = Z.reshape((len(a_array), len(b_array)))
+    
+    # plot contour  
+    ax.contour(a_array, b_array, np.exp(Z), colors=color, alpha=visibility)
+    ax.plot([-1000], [-1000], color=color, label=label)
+    ax.set(xlabel='slope', ylabel='intercept', xlim=(-5, 5), ylim=(-5, 5), title=title)
 
 if __name__ == "__main__":
     # Parse arguments
@@ -498,35 +532,11 @@ if __name__ == "__main__":
         
         fig, ax = plt.subplots()
         
-        # Create a grid of points with the determined bounds
-        xx, yy = np.mgrid[-10:10:300j, -10:10:300j]
+        
+        fig, axes = plt.subplots(1, figsize=(8,8))
+        plot_distribution(axes, density_fun=model.prior().log_prob, color='b', title=f'Samples from approximate posterior - {args.prior}')
+        plot_data(axes, z,y)
 
-        # Calculate log_prob for model.prior()
-        grid_points = torch.tensor(np.c_[xx.ravel(), yy.ravel()], dtype=torch.float32)
-        log_probs = model.prior().log_prob(grid_points).detach().numpy()
-
-        # Plot using contourf
-        ax.contourf(xx, yy, np.exp(log_probs.reshape(xx.shape)), cmap='viridis')
-        
-        # Plot the data, with labels colored by y label
-        scatter = ax.scatter(z[:, 0], z[:, 1], c=y, cmap='tab10')
-        legend1 = ax.legend(*scatter.legend_elements(), title="Classes")
-        ax.add_artist(legend1)
-        
-        # sets title
-        # Generate samples
-        model.eval()
-        loss_list = []
-        with torch.no_grad():
-            data_iter = iter(mnist_test_loader)
-            for x in tqdm(data_iter):
-                x = x[0].to(args.device)
-                loss = model(x)
-                loss_list.append(loss.item())
-        
-        ax.set_title(f'Samples from approximate posterior - {args.prior} Prior \n ELBO: {sum(loss_list)/len(loss_list)}')
-        ax.set_xlabel('Principal Component 1')
-        ax.set_ylabel('Principal Component 2')
         fig.savefig(args.samples)    
         
         
