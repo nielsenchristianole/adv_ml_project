@@ -410,7 +410,7 @@ if __name__ == "__main__":
     from torchvision import datasets, transforms
     from torchvision.utils import make_grid, save_image
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'eval', 'vis', 'msample'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'eval', 'vis', 'msample', 'fid'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus', 'mog', 'flow','vampprior'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--model', type=str, default='vae/model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='vae/samples.png', help='file to save samples in (default: %(default)s)')
@@ -571,4 +571,12 @@ if __name__ == "__main__":
 
         fig.savefig(args.samples)    
         
-        
+    elif args.mode == 'fid':
+        from FID.calculate_fid import calculate_fid
+
+        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+        model.eval()
+
+        fid = calculate_fid(lambda: torch.reshape((x:=model.sample(64)), (*x.shape[:-2], -1)), num_samples=10000, verbose=True)
+
+        print(f'FID: {fid:.4f}')

@@ -245,7 +245,7 @@ if __name__ == "__main__":
     from torchvision import datasets, transforms
     from torchvision.utils import save_image
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='train', choices=['train', 'sample', 'fid'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--data', type=str, default='mnist', choices=['tg', 'cb', 'mnist'], help='toy dataset to use {tg: two Gaussians, cb: chequerboard} (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
@@ -367,3 +367,12 @@ if __name__ == "__main__":
             fig.colorbar(im)
             plt.savefig(args.samples)
             plt.close()
+
+    elif args.mode == 'fid':
+        from FID.calculate_fid import calculate_fid
+
+        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+        model.eval()
+
+        fid = calculate_fid(lambda: model.sample((64,)), num_samples=10000, verbose=True)
+        print(f'FID: {fid:.4f}')
