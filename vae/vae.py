@@ -232,6 +232,40 @@ class VAE(nn.Module):
         self.decoder = decoder
         self.encoder = encoder
 
+    def iwae_elbo(self, x, n_samples=5):
+        """
+        Compute the IWAE ELBO for the given batch of data.
+
+        Parameters:
+        x: [torch.Tensor] 
+        A tensor of dimension `(batch_size, feature_dim1, feature_dim2, ...)`
+        n_samples: [int]
+        Number of samples to use for the Monte Carlo estimate of the ELBO.
+        """
+        q = self.encoder(x)  # returns: distribution
+        z = q.rsample(torch.Size([n_samples]))  # dim: n_samples, batch, latent_dim
+
+        log_prob = self.decoder(z).log_prob(x.unsqueeze(0))  # in 32, 28, 28 out dim: n_samples, batch
+        log_qz = q.log_prob(z)  # dim: n_samples, batch
+
+        if isinstance(self.prior, MixtureGaussianPrior) or isinstance(self.prior, FlowPrior) or isinstance(self.prior, VampPrior):
+            prior_log_prob = self.prior().log_prob(z.view(-1,z.shape[2])) # dim: (n_samples*batch), latent_dim
+            prior_log_prob = prior_log_prob.view(n_samples, -1) # dim: n_samples, batch
+        else:
+            prior_log_prob = self.prior().log_prob(z)  # dim: n_samples, batch
+
+        weights = log_prob + prior_log_prob - log_qz  # dim: n_samples, batch
+        weights = weights.transpose(0, 1)  # dim: batch, n_samples
+
+        # Compute log mean exp to avoid numerical instability.
+        max_weights = weights.max(dim=1, keepdim=True)[0]  # dim: batch, 1
+        weights = weights - max_weights  # dim: batch, n_samples
+        weights = torch.log(torch.mean(torch.exp(weights), dim=1))  # dim: batch
+        weights = weights + max_weights.squeeze()  # dim: batch
+
+        return torch.mean(weights)
+
+
     def elbo(self, x):
         """
         Compute the ELBO for the given batch of data.
@@ -252,9 +286,8 @@ class VAE(nn.Module):
             k = 256
             z_samples = q.rsample(torch.Size([k]))  # dim: k, batch, latent_dim
             z_samples_log_prob = q.log_prob(z_samples) # dim: k, batch
-            prior_log_prob = self.prior().log_prob(z_samples.view(-1,z_samples.shape[2])) # dim: (k*batch)
+            prior_log_prob = self.prior().log_prob(z_samples.view(-1,z_samples.shape[2])) # dim: (k*batch), latent_dim
             prior_log_prob = prior_log_prob.view(k, -1) # dim: k, batch
-
             
             kl = torch.mean(z_samples_log_prob - prior_log_prob, axis=0)  # dim: batch
         else:
@@ -292,7 +325,7 @@ class VAE(nn.Module):
         x: [torch.Tensor] 
            A tensor of dimension `(batch_size, feature_dim1, feature_dim2)`
         """
-        return -self.elbo(x)
+        return -self.iwae_elbo(x) #-self.elbo(x)
 
 
 def train(model, optimizer, data_loader, epochs, device):
@@ -358,16 +391,16 @@ def plot_distribution(ax, density_fun, color=None, visibility=1, label=None, tit
     A_array, B_array = np.meshgrid(a_array, b_array)   
     
     # form array with all combinations of (a,b) in our grid
-    AB = torch.tensor(np.column_stack((A_array.ravel(), B_array.ravel())))
+    AB = torch.tensor(np.column_stack((A_array.ravel(), B_array.ravel())),dtype=torch.float32)
     
     # evaluate density for every point in the grid and reshape bac
     Z = density_fun(AB).detach().cpu().numpy()
     Z = Z.reshape((len(a_array), len(b_array)))
     
     # plot contour  
-    ax.contour(a_array, b_array, np.exp(Z), colors=color, alpha=visibility)
+    ax.contour(a_array, b_array, Z, colors=color, alpha=visibility)
     ax.plot([-1000], [-1000], color=color, label=label)
-    ax.set(xlabel='slope', ylabel='intercept', xlim=(-5, 5), ylim=(-5, 5), title=title)
+    ax.set(xlabel='axis1', ylabel='axis2', xlim=(-5, 5), ylim=(-5, 5), title=title)
 
 if __name__ == "__main__":
     # Parse arguments
@@ -388,7 +421,6 @@ if __name__ == "__main__":
     parser.add_argument('--notBinarize', action='store_true', help='binarize the data (default: True)')
 
     args = parser.parse_args()
-    print('# Options')
     for key, value in sorted(vars(args).items()):
         print(key, '=', value)
 
@@ -534,8 +566,8 @@ if __name__ == "__main__":
         
         
         fig, axes = plt.subplots(1, figsize=(8,8))
-        plot_distribution(axes, density_fun=model.prior().log_prob, color='b', title=f'Samples from approximate posterior - {args.prior}')
-        plot_data(axes, z,y)
+        plot_data(axes, z,y, alpha=0.5)
+        plot_distribution(axes, density_fun=model.prior().log_prob, color='b', title=f'MINST samples from approximate posterior \n With ln {args.prior} prior distribution',num_points=1000,visibility=0.7)
 
         fig.savefig(args.samples)    
         
