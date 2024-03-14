@@ -106,7 +106,8 @@ def get_shortest_path(
     decoder: Callable[[torch.Tensor], torch.Tensor] = lambda x: x,
     metric: Callable[[torch.Tensor], torch.Tensor] = lambda x: torch.ones_like(x),
     return_initial_curve: bool = False,
-    return_final_weights: bool = False
+    return_final_weights: bool = False,
+    decode_returned_curve: bool = False,
 ):
     """
     Get the shortest path between two points
@@ -128,6 +129,7 @@ def get_shortest_path(
         return_initial_curve,
         return_final_weights
     )):
+        decoder = decoder if decode_returned_curve else (lambda x: x)
         return_values = [get_curve(weights, point_0, point_1, n, decoder=decoder)]
         if return_initial_curve: return_values.append(get_curve(initial_weights, point_0, point_1, n, decoder=decoder))
         if return_final_weights: return_values.append(weights)
