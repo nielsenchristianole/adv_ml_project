@@ -274,6 +274,7 @@ def proximity(curve_points, latent):
     pd_min_max = pd_min.max()
     return pd_min_max
 
+
 def get_latents(model: VAE, mnist_train_loader: torch.utils.data.DataLoader, device: str) -> tuple[torch.Tensor, torch.Tensor]:
     ## Encode test and train data
     latents, labels = [], []
@@ -386,13 +387,18 @@ def main():
         import matplotlib.colors as mcolors
 
         scatter_opacity = 0.2
-        curve_degree = 10
-        num_curve_points = 100
-        num_curves = 5
-        num_montecarlo_samples = 20 # for ensemble
+        curve_degree = 6
+        num_curve_points = 200
+        num_curves = 20
+        num_montecarlo_samples = 100 # for ensemble
+        optimizer_kwargs = dict(lr=1e-3, max_iter=1000, line_search_fn='strong_wolfe')
 
         ## Load trained model
-        model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+        if args.mode == 'part-b':
+            model = VAEENSEMBLE(prior, new_decoder, encoder, num_models=10).to(device)
+            model.load_state_dict(torch.load(ensemble_model_path, map_location=torch.device(args.device)))
+        else:
+            model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
         model.eval()
 
         latents, labels = get_latents(model, mnist_train_loader, args.device)
@@ -439,11 +445,6 @@ def main():
             return
         
         elif args.mode == 'part-b':
-            optimizer_kwargs = dict(lr=1e-1, max_iter=1000, line_search_fn='strong_wolfe')
-
-            model = VAEENSEMBLE(prior, new_decoder, encoder, num_models=10).to(device)
-            model.load_state_dict(torch.load(ensemble_model_path, map_location=torch.device(args.device)))
-            model.eval()
 
             curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
             for k in tqdm(range(num_curves), "Generating geodesics"):
