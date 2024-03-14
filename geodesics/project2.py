@@ -10,7 +10,10 @@ import torch.distributions as td
 from torch.distributions.kl import kl_divergence as KL
 import torch.utils.data
 from tqdm import tqdm
-
+import numpy as np
+import os
+if os.path.split(os.getcwd())[-1] == 'adv_ml_project':
+    os.chdir('./geodesics')
 
 class GaussianPrior(nn.Module):
     def __init__(self, M):
@@ -206,18 +209,30 @@ def proximity(curve_points, latent):
     pd_min_max = pd_min.max()
     return pd_min_max
 
+def get_latents(model: VAE, mnist_train_loader: torch.utils.data.DataLoader, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    ## Encode test and train data
+    latents, labels = [], []
+    with torch.no_grad():
+        for x, y in mnist_train_loader:
+            z = model.encoder(x.to(device))
+            latents.append(z.mean)
+            labels.append(y.to(device))
+        latents = torch.concatenate(latents, dim=0)
+        labels = torch.concatenate(labels, dim=0)
+    return latents, labels
 
-if __name__ == "__main__":
+
+def main():
     from torchvision import datasets, transforms
     import glob
 
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='train', choices=['train', 'plot'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='plot', choices=['train', 'plot', 'part-a'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='../assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
-    parser.add_argument('--plot', type=str, default='../assets/plot.png', help='file to save latent plot in (default: %(default)s)')
-    parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
+    parser.add_argument('--plot-dir', type=str, default='../assets/', help='file to save latent plot in (default: %(default)s)')
+    parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=15, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=2, metavar='N', help='dimension of latent variable (default: %(default)s)')
@@ -288,38 +303,65 @@ if __name__ == "__main__":
         # Save model
         torch.save(model.state_dict(), args.model)
 
-    elif args.mode == 'plot':
+    elif args.mode in ('plot', 'part-a'):
         import matplotlib.pyplot as plt
+        from matplotlib.lines import Line2D
+        import matplotlib.colors as mcolors
+        from utils import get_shortest_path
+
+        scatter_opacity = 0.2
+        emb_dim = 2
+        curve_degree = 10
+        num_curve_points = 50
+        num_curves = 50
 
         ## Load trained model
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
         model.eval()
 
-        ## Encode test and train data
-        latents, labels = [], []
-        with torch.no_grad():
-            for x, y in mnist_train_loader:
-                z = model.encoder(x.to(device))
-                latents.append(z.mean)
-                labels.append(y.to(device))
-            latents = torch.concatenate(latents, dim=0).detach().cpu().numpy()
-            labels = torch.concatenate(labels, dim=0).detach().cpu().numpy()
+        latents, labels = get_latents(model, mnist_train_loader, args.device)
+        latents_np, labels_np = latents.detach().cpu().numpy(), labels.detach().cpu().numpy()
 
         ## Plot training data
         plt.figure()
-        for k in range(num_classes):
-            idx = labels == k
-            plt.scatter(latents[idx, 0], latents[idx, 1])
-            
-        ## Plot random geodesics
-        num_curves = 50
-        curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
-        for k in range(num_curves):
-            i = curve_indices[k, 0]
-            j = curve_indices[k, 1]
-            z0 = latents[i]
-            z1 = latents[j]
-            # TODO: Compute, and plot geodesic between z0 and z1
+        plt.title('Latent space')
+        plt.xlabel('$z_1$')
+        plt.ylabel('$z_2$')
+        colors = np.array([f'C{i}' for i in range(num_classes)])[labels_np]
+        plt.scatter(latents_np[:, 0], latents_np[:, 1], c=colors, alpha=scatter_opacity)
         
-        plt.savefig(args.plot)
+        markerfacecolor = lambda idx: list(mcolors.TABLEAU_COLORS.values())[idx] + f'{hex(int(255*scatter_opacity)):<04}'[2:]
+        legend_handles = [Line2D([0], [0], label=i, marker='o', linestyle='', markeredgecolor=f'C{i}', markerfacecolor=markerfacecolor(i)) for i in range(num_classes)]
 
+        if args.mode == 'plot':
+            plt.legend(handles=legend_handles)
+            plt.savefig(os.path.join(args.plot_dir, 'latent_space.pdf'))
+            plt.show()
+            return
+
+        elif args.mode == 'part-a':
+            # Plot random geodesics
+            curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
+            for k in tqdm(range(num_curves), "Generating geodesics"):
+                i = curve_indices[k, 0]
+                j = curve_indices[k, 1]
+                z0 = latents[i]
+                z1 = latents[j]
+                # TODO: Compute, and plot geodesic between z0 and z1
+                decoder = lambda z: model.decoder(z).mean.view(z.shape[0], 784)
+                curve = get_shortest_path(z0, z1, num_curve_points, emb_dim=emb_dim, curve_degree=curve_degree, decoder=decoder).detach().cpu().numpy()
+                z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
+                plt.plot(curve[:, 0], curve[:, 1], c='k')
+                plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='k')
+            
+            legend_handles.extend((Line2D([0], [0], label='geodesic', linestyle='-', color='k'),
+                                Line2D([0], [0], label='endpoints', linestyle='', marker='o', markeredgecolor='k', markerfacecolor='k')))
+
+            plt.legend(handles=legend_handles)
+            plt.savefig(os.path.join(args.plot_dir, 'latent_space_part_a.pdf'))
+            plt.show()
+            return
+
+
+if __name__ == '__main__':
+    main()
