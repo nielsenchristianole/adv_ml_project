@@ -298,11 +298,11 @@ if __name__ == "__main__":
         latents, labels = [], []
         with torch.no_grad():
             for x, y in mnist_train_loader:
-                z = model.encoder(x)
+                z = model.encoder(x.to(device))
                 latents.append(z.mean)
-                labels.append(y)
-            latents = torch.concatenate(latents, dim=0)
-            labels = torch.concatenate(labels, dim=0)
+                labels.append(y.to(device))
+            latents = torch.concatenate(latents, dim=0).detach().cpu().numpy()
+            labels = torch.concatenate(labels, dim=0).detach().cpu().numpy()
 
         ## Plot training data
         plt.figure()
