@@ -4,6 +4,7 @@
 # - https://github.com/jmtomczak/intro_dgm/blob/main/vaes/vae_example.ipynb
 # - https://github.com/kampta/pytorch-distributions/blob/master/gaussian_vae.py
 
+from typing import Callable
 import torch
 import torch.nn as nn
 import torch.distributions as td
@@ -149,6 +150,34 @@ class VAE(nn.Module):
         return -self.elbo(x)
 
 
+class VAEENSEMBLE(nn.Module):
+
+    def __init__(self, prior: GaussianPrior, get_decoder: Callable[[], nn.Module], encoder: GaussianEncoder, num_models=10):
+        super(VAEENSEMBLE, self).__init__()
+        self.num_models = num_models
+        self.prior = prior
+        self.encoder = encoder
+        self.decoders = nn.ModuleList([BernoulliDecoder(get_decoder()) for _ in range(num_models)])
+    
+    def sample_decoder(self):
+        return self.decoders[np.random.randint(self.num_models)]
+    
+    def elbo(self, x):
+        q = self.encoder(x)
+        z = q.rsample()
+        decoder = self.sample_decoder()
+        elbo = torch.mean(decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0)
+        return elbo
+    
+    def forward(self, x):
+        return -self.elbo(x)
+    
+    def sample(self, n_samples=1):
+        z = self.prior().sample(torch.Size([n_samples]))
+        decoder = self.sample_decoder()
+        return decoder(z).sample()
+
+
 def train(model, optimizer, data_loader, epochs, device):
     """
     Train a VAE model.
@@ -225,11 +254,12 @@ def get_latents(model: VAE, mnist_train_loader: torch.utils.data.DataLoader, dev
 def main():
     from torchvision import datasets, transforms
     import glob
+    from pathlib import Path
 
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='plot', choices=['train', 'plot', 'part-a'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('mode', type=str, default='plot', choices=['train', 'plot', 'part-a', 'train-ensemble'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='../assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--plot-dir', type=str, default='../assets/', help='file to save latent plot in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -302,6 +332,17 @@ def main():
 
         # Save model
         torch.save(model.state_dict(), args.model)
+    
+    elif args.mode == 'train-ensemble':
+        num_ensemble = 10
+
+        model_path = Path(args.model)
+        model_path = model_path.with_stem(model_path.stem + '_ensemble')
+        
+        model = VAEENSEMBLE(prior, new_decoder, encoder, num_models=num_ensemble).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        train(model, optimizer, mnist_train_loader, args.epochs * num_ensemble, args.device)
+        torch.save(model.state_dict(), model_path)
 
     elif args.mode in ('plot', 'part-a'):
         import matplotlib.pyplot as plt
@@ -310,7 +351,6 @@ def main():
         from utils import get_shortest_path
 
         scatter_opacity = 0.2
-        emb_dim = 2
         curve_degree = 10
         num_curve_points = 50
         num_curves = 50
@@ -349,7 +389,7 @@ def main():
                 z1 = latents[j]
                 # TODO: Compute, and plot geodesic between z0 and z1
                 decoder = lambda z: model.decoder(z).mean.view(z.shape[0], 784)
-                curve = get_shortest_path(z0, z1, num_curve_points, emb_dim=emb_dim, curve_degree=curve_degree, decoder=decoder).detach().cpu().numpy()
+                curve = get_shortest_path(z0, z1, num_curve_points, emb_dim=args.latent_dim, curve_degree=curve_degree, decoder=decoder).detach().cpu().numpy()
                 z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
                 plt.plot(curve[:, 0], curve[:, 1], c='k')
                 plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='k')
