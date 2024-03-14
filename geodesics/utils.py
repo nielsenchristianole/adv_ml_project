@@ -27,15 +27,16 @@ def get_curve(
         input shape (n, embedding_dim)
         output shape (n, decoder_dim)
     """
+    device = point_0.device
     emb_dim = point_0.shape[0]
     curve_degree = weights.shape[1] + 2
 
-    w_i0 = torch.zeros((emb_dim, 1))
+    w_i0 = torch.zeros((emb_dim, 1), device=device)
     w_iK = - weights.sum(dim=1, keepdim=True)
     _weights = torch.cat([w_i0, weights, w_iK], dim=1)
 
-    t = torch.linspace(0, 1, n)[:, None] # shape (n, 1)
-    exponents = torch.arange(0, curve_degree)[None, :] # shape (1, curve_degree)
+    t = torch.linspace(0, 1, n, device=device)[:, None] # shape (n, 1)
+    exponents = torch.arange(0, curve_degree, device=device)[None, :] # shape (1, curve_degree)
     t_polynoal = t ** exponents # shape (n, curve_degree)
 
     polynomial_interpolation_displacement = t_polynoal @ _weights.T # shape (n, emb_dim)
@@ -52,7 +53,7 @@ def get_curve_energy(
     n: int = 10,
     *,
     decoder: Callable[[torch.Tensor], torch.Tensor] = lambda x: x,
-    metric: Callable[[torch.Tensor], torch.Tensor] = lambda x: torch.eye(x.shape[1])[None, ...],
+    metric: Callable[[torch.Tensor], torch.Tensor] = lambda x: torch.eye(x.shape[1], device=x.device)[None, ...],
     return_length: bool = False
 ) -> torch.Tensor:
     """
@@ -95,8 +96,8 @@ def closure(optimizer: LBFGS, loss_fn: Callable[[], torch.Tensor]) -> torch.Tens
 
 
 def get_shortest_path(
-    point_0: torch.Tensor=None,
-    point_1: torch.Tensor=None,
+    point_0: torch.Tensor,
+    point_1: torch.Tensor,
     n: int=10,
     *,
     weights: torch.Tensor=None,
@@ -104,7 +105,7 @@ def get_shortest_path(
     curve_degree: int=None,
     optimizer_kwargs: dict = dict(),
     decoder: Callable[[torch.Tensor], torch.Tensor] = lambda x: x,
-    metric: Callable[[torch.Tensor], torch.Tensor] = lambda x: torch.ones_like(x),
+    metric: Callable[[torch.Tensor], torch.Tensor] = lambda x: torch.eye(x.shape[1], device=x.device)[None, ...],
     return_initial_curve: bool = False,
     return_final_weights: bool = False,
     decode_returned_curve: bool = False,
@@ -112,24 +113,23 @@ def get_shortest_path(
     """
     Get the shortest path between two points
     """
+    device = point_0.device
+
     if weights is None:
-        weights = torch.randn(emb_dim, curve_degree - 2, requires_grad=True)
-    if point_0 is None:
-        point_0 = torch.randn(emb_dim, requires_grad=False)
-    if point_1 is None:
-        point_1 = torch.randn(emb_dim, requires_grad=False)
+        assert emb_dim is not None and curve_degree is not None, "Give either weights or curve degree and emb_dim"
+        weights = torch.randn(emb_dim, curve_degree - 2, requires_grad=True, device=device)
     optimizer_kwargs = dict(lr=1e-2, max_iter=500, line_search_fn='strong_wolfe') | optimizer_kwargs
 
     optimizer = LBFGS([weights], **optimizer_kwargs)
     initial_weights = weights.clone().detach()
-    loss_fn = partial(get_curve_energy, weights=weights, point_0=point_0, point_1=point_1, n=n, metric=metric)
+    loss_fn = partial(get_curve_energy, weights=weights, point_0=point_0, point_1=point_1, n=n, metric=metric, decoder=decoder)
     optimizer.step(partial(closure, optimizer, loss_fn))
 
+    decoder = decoder if decode_returned_curve else (lambda x: x)
     if any((
         return_initial_curve,
         return_final_weights
     )):
-        decoder = decoder if decode_returned_curve else (lambda x: x)
         return_values = [get_curve(weights, point_0, point_1, n, decoder=decoder)]
         if return_initial_curve: return_values.append(get_curve(initial_weights, point_0, point_1, n, decoder=decoder))
         if return_final_weights: return_values.append(weights)
