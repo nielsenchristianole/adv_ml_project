@@ -69,15 +69,18 @@ def get_curve_energy(
         output shape (n, decoder_dim)
     :param metric: a function that returns the local norm of the data manifold in each dimension
         input shape (n-1, embedding_dim/decoder_dim)
-        output shape (n-1, embedding_dim/decoder_dim)
+        output shape (n-1, embedding_dim/decoder_dim, embedding_dim/decoder_dim)
     """
     decoded_points = get_curve(weights, point_0, point_1, n, decoder=decoder)
 
     secant = torch.diff(decoded_points, dim=0)
     secant_mid_point = decoded_points[:-1] + secant / 2
-    lengths = torch.norm(secant * metric(secant_mid_point), dim=1)
-    energies = torch.square(lengths)
-    return (energies, lengths)[return_length].sum()
+    secant = secant[..., None]
+    _metric = metric(secant_mid_point)
+    energies = torch.permute(secant, (0, 2, 1)) @ _metric @ secant
+    if return_length:
+        return torch.sqrt(energies).sum()
+    return energies.sum()
 
 
 def closure(optimizer: LBFGS, loss_fn: Callable[[], torch.Tensor]) -> torch.Tensor:
@@ -103,7 +106,7 @@ if __name__ == '__main__':
     point_1 = torch.tensor([100, 200], requires_grad=False)
 
 
-    metric = lambda x: (1 + torch.norm(x, dim=1) ** 2)[:, None] * torch.ones((1, x.shape[1]))
+    metric = lambda x: (1 + torch.norm(x, dim=1) ** 2)[:, None, None] * torch.eye(x.shape[1])[None, ...]
 
     eps = 1e-3
     loss_fn = partial(get_curve_energy, weights=weights, point_0=point_0, point_1=point_1, n=n, metric=metric)
