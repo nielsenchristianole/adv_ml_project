@@ -13,6 +13,8 @@ import torch.utils.data
 from tqdm import tqdm
 import numpy as np
 import os
+from functools import partial
+from utils import get_shortest_path, get_curve, get_curve_energy
 if os.path.split(os.getcwd())[-1] == 'adv_ml_project':
     os.chdir('./geodesics')
 
@@ -159,13 +161,13 @@ class VAEENSEMBLE(nn.Module):
         self.encoder = encoder
         self.decoders = nn.ModuleList([BernoulliDecoder(get_decoder()) for _ in range(num_models)])
     
-    def sample_decoder(self):
-        return self.decoders[np.random.randint(self.num_models)]
-    
+    def sample_decoder(self, num_samples=1):
+        return (self.decoders[i] for i in np.random.choice(self.num_models, num_samples, replace=False))
+
     def elbo(self, x):
         q = self.encoder(x)
         z = q.rsample()
-        decoder = self.sample_decoder()
+        decoder, = self.sample_decoder()
         elbo = torch.mean(decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0)
         return elbo
     
@@ -174,8 +176,42 @@ class VAEENSEMBLE(nn.Module):
     
     def sample(self, n_samples=1):
         z = self.prior().sample(torch.Size([n_samples]))
-        decoder = self.sample_decoder()
+        decoder, = self.sample_decoder()
         return decoder(z).sample()
+
+    def get_shortest_curve(
+        self,
+        z0,
+        z1,
+        num_curve_points,
+        emb_dim,
+        curve_degree,
+        num_montecarlo_samples=1,
+        return_initial_curve: bool = False,
+        return_final_weights: bool = False,
+        decode_returned_curve: bool = False,
+        optimizer_kwargs: dict = dict()
+    ):
+        return get_shortest_path(
+            z0,
+            z1,
+            num_curve_points,
+            emb_dim=emb_dim,
+            curve_degree=curve_degree,
+            _get_curve_energy=partial(self.get_curve_energy, num_montecarlo_samples=num_montecarlo_samples),
+            return_initial_curve=return_initial_curve,
+            return_final_weights=return_final_weights,
+            decode_returned_curve=decode_returned_curve,
+            optimizer_kwargs=optimizer_kwargs)
+
+    def get_curve_energy(self, *, weights, point_0, point_1, n, num_montecarlo_samples=1, metric, decoder):
+        z = get_curve(weights, point_0, point_1, n)
+
+        kl_div = 0
+        for _ in range(num_montecarlo_samples):
+            decoder1, decoder2 = self.sample_decoder(2)
+            kl_div += td.kl_divergence(decoder1(z), decoder2(z)).sum()
+        return kl_div / num_montecarlo_samples
 
 
 def train(model, optimizer, data_loader, epochs, device):
@@ -259,7 +295,7 @@ def main():
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', type=str, default='plot', choices=['train', 'plot', 'part-a', 'train-ensemble'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--mode', type=str, default='part-b', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='../assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--plot-dir', type=str, default='../assets/', help='file to save latent plot in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -274,6 +310,9 @@ def main():
         print(key, '=', value)
 
     device = args.device
+
+    ensemble_model_path = Path(args.model)
+    ensemble_model_path = ensemble_model_path.with_stem(ensemble_model_path.stem + '_ensemble')
 
     # Load a subset of MNIST and create data loaders
     def subsample(data, targets, num_data, num_classes):
@@ -335,25 +374,22 @@ def main():
     
     elif args.mode == 'train-ensemble':
         num_ensemble = 10
-
-        model_path = Path(args.model)
-        model_path = model_path.with_stem(model_path.stem + '_ensemble')
         
         model = VAEENSEMBLE(prior, new_decoder, encoder, num_models=num_ensemble).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         train(model, optimizer, mnist_train_loader, args.epochs * num_ensemble, args.device)
-        torch.save(model.state_dict(), model_path)
+        torch.save(model.state_dict(), ensemble_model_path)
 
-    elif args.mode in ('plot', 'part-a'):
+    elif args.mode in ('plot', 'part-a', 'part-b'):
         import matplotlib.pyplot as plt
         from matplotlib.lines import Line2D
         import matplotlib.colors as mcolors
-        from utils import get_shortest_path
 
         scatter_opacity = 0.2
         curve_degree = 10
-        num_curve_points = 50
-        num_curves = 50
+        num_curve_points = 100
+        num_curves = 5
+        num_montecarlo_samples = 20 # for ensemble
 
         ## Load trained model
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
@@ -401,6 +437,33 @@ def main():
             plt.savefig(os.path.join(args.plot_dir, 'latent_space_part_a.pdf'))
             plt.show()
             return
+        
+        elif args.mode == 'part-b':
+            optimizer_kwargs = dict(lr=1e-1, max_iter=1000, line_search_fn='strong_wolfe')
+
+            model = VAEENSEMBLE(prior, new_decoder, encoder, num_models=10).to(device)
+            model.load_state_dict(torch.load(ensemble_model_path, map_location=torch.device(args.device)))
+            model.eval()
+
+            curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
+            for k in tqdm(range(num_curves), "Generating geodesics"):
+                i = curve_indices[k, 0]
+                j = curve_indices[k, 1]
+                z0 = latents[i]
+                z1 = latents[j]
+                curve = model.get_shortest_curve(z0, z1, num_curve_points, args.latent_dim, curve_degree, num_montecarlo_samples=num_montecarlo_samples, optimizer_kwargs=optimizer_kwargs).detach().cpu().numpy()
+                z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
+                plt.plot(curve[:, 0], curve[:, 1], c='k')
+                plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='k')
+            
+            legend_handles.extend((Line2D([0], [0], label='geodesic', linestyle='-', color='k'),
+                                Line2D([0], [0], label='endpoints', linestyle='', marker='o', markeredgecolor='k', markerfacecolor='k')))
+
+            plt.legend(handles=legend_handles)
+            plt.savefig(os.path.join(args.plot_dir, 'latent_space_part_b.pdf'))
+            plt.show()
+            return
+
 
 
 if __name__ == '__main__':
