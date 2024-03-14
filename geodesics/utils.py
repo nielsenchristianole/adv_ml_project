@@ -1,4 +1,5 @@
 from typing import Callable
+from functools import partial
 
 import torch
 from torch.optim import LBFGS
@@ -33,7 +34,7 @@ def get_curve(
     w_iK = - weights.sum(dim=1, keepdim=True)
     _weights = torch.cat([w_i0, weights, w_iK], dim=1)
 
-    t = torch.linspace(0, 1, n)[:,None] # shape (n, 1)
+    t = torch.linspace(0, 1, n)[:, None] # shape (n, 1)
     exponents = torch.arange(0, curve_degree)[None, :] # shape (1, curve_degree)
     t_polynoal = t ** exponents # shape (n, curve_degree)
 
@@ -51,7 +52,7 @@ def get_curve_energy(
     n: int = 10,
     *,
     decoder: Callable[[torch.Tensor], torch.Tensor] = lambda x: x,
-    metric: Callable[[torch.Tensor], torch.Tensor] = lambda x: torch.ones_like(x),
+    metric: Callable[[torch.Tensor], torch.Tensor] = lambda x: torch.eye(x.shape[1])[None, ...],
     return_length: bool = False
 ) -> torch.Tensor:
     """
@@ -93,35 +94,74 @@ def closure(optimizer: LBFGS, loss_fn: Callable[[], torch.Tensor]) -> torch.Tens
     return loss
 
 
+def get_shortest_path(
+    point_0: torch.Tensor=None,
+    point_1: torch.Tensor=None,
+    n: int=10,
+    *,
+    weights: torch.Tensor=None,
+    emb_dim: int=None,
+    curve_degree: int=None,
+    optimizer: LBFGS = None,
+    decoder: Callable[[torch.Tensor], torch.Tensor] = lambda x: x,
+    metric: Callable[[torch.Tensor], torch.Tensor] = lambda x: torch.ones_like(x),
+    return_initial_curve: bool = False,
+    return_final_weights: bool = False
+):
+    """
+    Get the shortest path between two points
+    """
+    if weights is None:
+        weights = torch.randn(emb_dim, curve_degree - 2, requires_grad=True)
+    if point_0 is None:
+        point_0 = torch.randn(emb_dim, requires_grad=False)
+    if point_1 is None:
+        point_1 = torch.randn(emb_dim, requires_grad=False)
+    if optimizer is None:
+        optimizer = LBFGS([weights], lr=1e-3, max_iter=100, line_search_fn='strong_wolfe')
+
+    initial_weights = weights.clone().detach()
+    loss_fn = partial(get_curve_energy, weights=weights, point_0=point_0, point_1=point_1, n=n, metric=metric, return_length=True)
+    optimizer.step(partial(closure, optimizer, loss_fn))
+
+    if any((
+        return_initial_curve,
+        return_final_weights
+    )):
+        return_values = [get_curve(weights, point_0, point_1, n, decoder=decoder)]
+        if return_initial_curve: return_values.append(get_curve(initial_weights, point_0, point_1, n, decoder=decoder))
+        if return_final_weights: return_values.append(weights)
+        return return_values
+    return get_curve(weights, point_0, point_1, n, decoder=decoder)
+
+
 if __name__ == '__main__':
-    from functools import partial
     import matplotlib.pyplot as plt
 
-    n = 10
     emb_dim = 2
     curve_degree = 10
 
-    weights = torch.randn(emb_dim, curve_degree - 2, requires_grad=True)
     point_0 = torch.tensor([200, 100], requires_grad=False)
     point_1 = torch.tensor([100, 200], requires_grad=False)
 
-
     metric = lambda x: (1 + torch.norm(x, dim=1) ** 2)[:, None, None] * torch.eye(x.shape[1])[None, ...]
 
-    eps = 1e-3
-    loss_fn = partial(get_curve_energy, weights=weights, point_0=point_0, point_1=point_1, n=n, metric=metric)
-    optimizer = LBFGS([weights], lr=1e-1, max_iter=100, line_search_fn='strong_wolfe')
-
-    initial_weights = weights.clone().detach()
-    optimizer.step(partial(closure, optimizer, loss_fn))
+    final_curve, initial_curve = get_shortest_path(
+        point_0=point_0,
+        point_1=point_1,
+        emb_dim=emb_dim,
+        curve_degree=curve_degree,
+        metric=metric,
+        return_initial_curve=True
+    )
 
     # plots initial curve
-    initial_curve = get_curve(initial_weights, point_0, point_1, n).detach().numpy()
+    initial_curve = initial_curve.detach().numpy()
     plt.plot(initial_curve[:, 0], initial_curve[:, 1], '-o', label='initial curve')
 
     # plots optimized curve
-    optimized_curve = get_curve(weights, point_0, point_1, n).detach().numpy()
-    plt.plot(optimized_curve[:, 0], optimized_curve[:, 1], '-o', label='optimized curve')
+    final_curve = final_curve.detach().numpy()
+    plt.plot(final_curve[:, 0], final_curve[:, 1], '-o', label='optimized curve')
 
     plt.legend()
     plt.show()
