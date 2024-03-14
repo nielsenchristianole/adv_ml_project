@@ -215,12 +215,13 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('mode', type=str, default='train', choices=['train', 'plot'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
-    parser.add_argument('--plot', type=str, default='plot.png', help='file to save latent plot in (default: %(default)s)')
+    parser.add_argument('--model', type=str, default='../assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser.add_argument('--plot', type=str, default='../assets/plot.png', help='file to save latent plot in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=15, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=2, metavar='N', help='dimension of latent variable (default: %(default)s)')
+    parser.add_argument('--data-dir', type=str, default='../data', help='where to store and look for data (default: %(default)s)')
 
     args = parser.parse_args()
     print('# Options')
@@ -240,7 +241,7 @@ if __name__ == "__main__":
     num_train_data = 2048
     num_test_data = 16  # we keep this number low to only compute a few geodesics
     num_classes = 3
-    train_tensors = datasets.MNIST('data/', train=True, download=True, transform=transforms.Compose([transforms.ToTensor()]))
+    train_tensors = datasets.MNIST(args.data_dir, train=True, download=True, transform=transforms.Compose([transforms.ToTensor()]))
     train_data = subsample(train_tensors.data, train_tensors.targets, num_train_data, num_classes)
     mnist_train_loader = torch.utils.data.DataLoader(train_data, batch_size=32)
     
