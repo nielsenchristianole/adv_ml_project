@@ -101,6 +101,7 @@ def get_shortest_path(
     n: int=10,
     *,
     weights: torch.Tensor=None,
+    _get_curve_energy: Callable[[], torch.Tensor]=get_curve_energy,
     emb_dim: int=None,
     curve_degree: int=None,
     optimizer_kwargs: dict = dict(),
@@ -122,7 +123,7 @@ def get_shortest_path(
 
     optimizer = LBFGS([weights], **optimizer_kwargs)
     initial_weights = weights.clone().detach()
-    loss_fn = partial(get_curve_energy, weights=weights, point_0=point_0, point_1=point_1, n=n, metric=metric, decoder=decoder)
+    loss_fn = partial(_get_curve_energy, weights=weights, point_0=point_0, point_1=point_1, n=n, metric=metric, decoder=decoder)
     optimizer.step(partial(closure, optimizer, loss_fn))
 
     decoder = decoder if decode_returned_curve else (lambda x: x)
