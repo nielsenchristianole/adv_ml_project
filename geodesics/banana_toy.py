@@ -75,7 +75,7 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
     from utils import get_shortest_path
 
-    metric, data = get_banana_metric(0.15, 1e-4, 'data/toybanana.npy')
+    metric, data = get_banana_metric(0.15, 1e-1, 'data/toybanana.npy')
 
     xmin, ymin = tuple(data.min(dim=0).values.tolist())
     xmax, ymax = tuple(data.max(dim=0).values.tolist())
@@ -91,15 +91,18 @@ if __name__ == '__main__':
     
     v = torch.reshape(V, X.shape)
 
-    plt.pcolormesh(x, y, v, clim=(v.min(), v.max()), shading='auto')
+    plt.pcolormesh(x, y, v, cmap=plt.cm.RdBu_r, clim=(v.min(), v.max()), shading='nearest')
+    plt.colorbar()
+    plt.scatter(data[:, 0], data[:, 1], s=10, c='k')
 
     point_0 = torch.tensor([-1.2, -0.4], requires_grad=False)
-    point_1 = torch.tensor([1.4, -0.5], requires_grad=False)
+    point_1 = torch.tensor([-2, 0.4], requires_grad=False)
+    point_0 = torch.tensor([1.4, -0.5], requires_grad=False)
 
     final_curve, initial_curve = get_shortest_path(
         point_0=point_0,
         point_1=point_1,
-        n=20,
+        n=30,
         emb_dim=2,
         curve_degree=10,
         metric=metric,
