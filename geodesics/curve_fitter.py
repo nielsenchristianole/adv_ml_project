@@ -1,3 +1,4 @@
+import pdb
 from abc import ABC, abstractmethod, abstractproperty
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -29,7 +30,7 @@ class OptimizerClass(Enum):
 class CurveConfig(nn.Module):
     num_points: int
     emb_dim: int
-    
+
     # In case of a polynomial curve
     curve_degree: Optional[int] = None
     polynomial_weights: Optional[torch.Tensor] = None
@@ -94,7 +95,17 @@ class CurveFitter(nn.Module, ABC):
         return energy
     
     def kl_energy(self, points: torch.Tensor) -> torch.Tensor:
-        energy = sum(KL(p, q) for p, q in zip(points[:-1], points[1:])) # eq: 12.26
+
+        # if it is an ensemble model
+        if isinstance(points[0], list):
+            #    def sample_energy(self, z, num_montecarlo_samples=100) -> torch.Tensor:
+            divergence = 0
+            for ps, qs in zip(points[:-1], points[1:]):
+                for p, q in zip(ps,qs):
+                    divergence += KL(p, q)
+            energy = divergence / len(points[0])
+        else:
+            energy = sum(KL(p, q) for p, q in zip(points[:-1], points[1:])) # eq: 12.26
         return energy
     
     def infer_energy(self, points: torch.Tensor) -> torch.Tensor:
@@ -220,7 +231,7 @@ class PiecewiseCurveFitter(CurveFitter):
     def get_intermidiate_points(self) -> torch.Tensor:
         t = torch.linspace(0, 1, self.config.num_points, device=self.device)[1:-1, None]
         intermidiate_points = (1 - t) * self.start_point[None, :] + t * self.end_point[None, :]
-        # intermidiate_points += torch.randn_like(intermidiate_points) * 1e-1 # Makes no difference
+        #intermidiate_points += torch.randn_like(intermidiate_points) * 1e-1 # Makes no difference
         return torch.nn.Parameter(intermidiate_points, requires_grad=True)
 
     @property

@@ -192,13 +192,13 @@ class VAEENSEMBLE(nn.Module):
         decoder, = self.sample_decoder()
         return decoder(z).sample()
 
-    def sample_energy(self, z, num_montecarlo_samples=100) -> torch.Tensor:
-        divergense = 0
-        for z_i, z_j in zip(z[:-1], z[1:]):
-            for _ in range(num_montecarlo_samples):
-                decoder_1, decoder_2 = self.sample_decoder(2)
-                divergense += KL(decoder_1(z_i), decoder_2(z_j))
-        return divergense / num_montecarlo_samples
+    # def sample_energy(self, z, num_montecarlo_samples=100) -> torch.Tensor:
+    #     divergense = 0
+    #     for z_i, z_j in zip(z[:-1], z[1:]):
+    #         for _ in range(num_montecarlo_samples):
+    #             decoder_1, decoder_2 = self.sample_decoder(2) # gets two random decoders from the list of 10
+    #             divergense += KL(decoder_1(z_i), decoder_2(z_j))
+    #     return divergense / num_montecarlo_samples
 
     def fewer_decoders(self, num_decoders=10) -> 'VAEENSEMBLE':
         this = deepcopy(self)
@@ -303,7 +303,7 @@ def main():
 
     from torchvision import datasets, transforms
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='part-a', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--mode', type=str, default='part-b', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='../assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--plot-dir', type=str, default='../assets/', help='file to save latent plot in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -382,7 +382,7 @@ def main():
         # Save model
         torch.save(model.state_dict(), args.model)
 
-###### we did the rest of this file.
+    ###### we did the rest of this file.
     
     elif args.mode == 'train-ensemble':
         num_ensemble = 10
@@ -490,9 +490,14 @@ def main():
                 curve_indices = torch.randint(num_train_data, (num_curves, 2)) # (num_curves) x 2
               
             curve_config.optimizer_kwargs=dict(epochs=200, lr=1e-1)
-            curve_config.curve_to_energy = Curve2Energy.PASS # TODO: try with other optimizer
-            curve_config.optimizer_class = OptimizerClass.ADAM
-            curve_config.decoder = lambda z: model.sample_energy(z, num_montecarlo_samples)
+            # curve_config.optimizer_kwargs = dict(lr=1*0.2, max_iter=5*100000, line_search_fn='strong_wolfe')
+            curve_config.curve_to_energy = Curve2Energy.KL #! Need PASS because we are using the ensemble model
+            curve_config.optimizer_class = OptimizerClass.ADAM # ? Try m
+            # curve_config.decoder = lambda z: model.sample_energy(z, num_montecarlo_samples)
+            # curve_config.decoder = lambda z: model.decode(z)
+            curve_config.decoder = lambda z: [
+                [dec(z_i) for dec in model.sample_decoder(num_montecarlo_samples)] for z_i in z
+            ]
 
             curve_fitter = curve_fitter_class(curve_config, device=device, verbose_energies=verbose_energies)
 
