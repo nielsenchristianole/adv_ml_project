@@ -1,16 +1,16 @@
-from typing import Callable, Optional, Any
-from functools import partial
-from enum import Enum
-from dataclasses import dataclass, field
 from abc import ABC, abstractmethod, abstractproperty
 from copy import deepcopy
+from dataclasses import dataclass, field
+from enum import Enum
+from functools import partial
+from typing import Any, Callable, Optional
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import LBFGS
-from torch.distributions.kl import kl_divergence as KL
 from torch.distributions import Distribution
+from torch.distributions.kl import kl_divergence as KL
+from torch.optim import LBFGS
 
 
 class Curve2Energy(Enum):
@@ -38,7 +38,7 @@ class CurveConfig(nn.Module):
     decoder: Optional[Callable[[torch.Tensor], torch.Tensor | list[Distribution]]] = None
 
     optimizer_kwargs: Optional[dict[str, Any]] = field(default_factory=dict)
-    curve_to_energy: Curve2Energy = Curve2Energy.INFER
+    curve_to_energy: Curve2Energy = Curve2Energy.KL
     optimizer_class: OptimizerClass = OptimizerClass.LBFGS
 
     def __post_init__(self):
@@ -89,12 +89,12 @@ class CurveFitter(nn.Module, ABC):
         secant_mid_point = points[:-1] + secant / 2
         secant = secant[..., None]
         _metric = self.metric(secant_mid_point)
-        energies = torch.permute(secant, (0, 2, 1)) @ _metric @ secant
+        energies = torch.permute(secant, (0, 2, 1)) @ _metric @ secant # we assume constant metric for each secant.
         energy = energies.sum()
         return energy
     
     def kl_energy(self, points: torch.Tensor) -> torch.Tensor:
-        energy = sum(KL(p, q) for p, q in zip(points[:-1], points[1:]))
+        energy = sum(KL(p, q) for p, q in zip(points[:-1], points[1:])) # eq: 12.26
         return energy
     
     def infer_energy(self, points: torch.Tensor) -> torch.Tensor:
@@ -117,6 +117,7 @@ class CurveFitter(nn.Module, ABC):
             case Curve2Energy.PASS:
                 energy = points
             case Curve2Energy.INFER:
+                raise ValueError("Please don't infer energy - specify it instead")
                 energy = self.infer_energy(points)
             case _:
                 raise ValueError(f"Unknown curve_to_energy {self.config.curve_to_energy}")
@@ -159,9 +160,9 @@ class PolynomialCurveFitter(CurveFitter):
         verbose_energies: bool = False
     ) -> None:
         super().__init__(config, start_point, end_point, device, verbose_energies)
-
         assert (self.config.curve_degree is not None)
-        self.optimizable_parameter = torch.nn.Parameter(config.polynomial_weights or self.sample_intermidiate_weights(), requires_grad=True)
+        self.reset(start_point, end_point)
+        #self.optimizable_parameter = torch.nn.Parameter(config.polynomial_weights or self.sample_intermidiate_weights(), requires_grad=True)
     
     def sample_intermidiate_weights(self) -> torch.Tensor:
         return torch.randn(
@@ -182,7 +183,9 @@ class PolynomialCurveFitter(CurveFitter):
         self.start_point = start_point
         self.end_point = end_point
         self.is_fitted = False
-        self.optimizable_parameter = torch.nn.Parameter(self.sample_intermidiate_weights(), requires_grad=True)
+        
+        self.optimizable_parameter = torch.nn.Parameter(self.config.polynomial_weights or self.sample_intermidiate_weights(), requires_grad=True)
+        # self.optimizable_parameter = torch.nn.Parameter(self.sample_intermidiate_weights(), requires_grad=True)
 
     @property
     def points(self) -> torch.Tensor:
@@ -217,7 +220,7 @@ class PiecewiseCurveFitter(CurveFitter):
     def get_intermidiate_points(self) -> torch.Tensor:
         t = torch.linspace(0, 1, self.config.num_points, device=self.device)[1:-1, None]
         intermidiate_points = (1 - t) * self.start_point[None, :] + t * self.end_point[None, :]
-        intermidiate_points += torch.randn_like(intermidiate_points) * 1e-1
+        # intermidiate_points += torch.randn_like(intermidiate_points) * 1e-1 # Makes no difference
         return torch.nn.Parameter(intermidiate_points, requires_grad=True)
 
     @property
