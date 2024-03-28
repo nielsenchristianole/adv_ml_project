@@ -4,21 +4,31 @@
 # - https://github.com/jmtomczak/intro_dgm/blob/main/vaes/vae_example.ipynb
 # - https://github.com/kampta/pytorch-distributions/blob/master/gaussian_vae.py
 
-from typing import Callable
-import torch
-import torch.nn as nn
-import torch.distributions as td
-from torch.distributions.kl import kl_divergence as KL
-import torch.utils.data
-from tqdm import tqdm
-import numpy as np
 import os
 from functools import partial
-from curve_fitter import CurveConfig, PolynomialCurveFitter, PiecewiseCurveFitter, Curve2Energy, OptimizerClass
+from typing import Callable
+
+import numpy as np
+import torch
+import torch.distributions as td
+import torch.nn as nn
+import torch.utils.data
+from curve_fitter import (
+    Curve2Energy,
+    CurveConfig,
+    OptimizerClass,
+    PiecewiseCurveFitter,
+    PolynomialCurveFitter,
+)
+from torch.distributions.kl import kl_divergence as KL
+from tqdm import tqdm
+
 if os.path.split(os.getcwd())[-1] == 'adv_ml_project':
     os.chdir('./geodesics')
-import einops
 from copy import deepcopy
+
+import einops
+
 
 class GaussianPrior(nn.Module):
     def __init__(self, M):
@@ -253,7 +263,7 @@ def proximity(curve_points, latent):
     The function returns a scalar.
     """
     pd = torch.cdist(curve_points, latent)  # M x N
-    pd_min, _ = torch.min(pd, dim=0)
+    pd_min, _ = torch.min(pd, dim=1)
     pd_min_max = pd_min.max()
     return pd_min_max
 
@@ -282,12 +292,12 @@ def get_entropy(model: VAE, x_resolution: int, y_resolution: int, _view: tuple[t
 
 
 def main():
-    from torchvision import datasets, transforms
+    # Parse arguments
+    import argparse
     import glob
     from pathlib import Path
 
-    # Parse arguments
-    import argparse
+    from torchvision import datasets, transforms
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, default='part-a', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='../assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
@@ -375,9 +385,9 @@ def main():
         torch.save(model.state_dict(), ensemble_model_path)
 
     elif args.mode in ('plot', 'part-a', 'part-b'):
+        import matplotlib.colors as mcolors
         import matplotlib.pyplot as plt
         from matplotlib.lines import Line2D
-        import matplotlib.colors as mcolors
 
         scatter_opacity = 0.2
         num_curves = 0#10
