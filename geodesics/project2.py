@@ -14,9 +14,11 @@ from tqdm import tqdm
 import numpy as np
 import os
 from functools import partial
-from utils import get_shortest_path, get_curve, get_curve_energy
+from curve_fitter import CurveConfig, PolynomialCurveFitter, PiecewiseCurveFitter, Curve2Energy, OptimizerClass
 if os.path.split(os.getcwd())[-1] == 'adv_ml_project':
     os.chdir('./geodesics')
+import einops
+from copy import deepcopy
 
 class GaussianPrior(nn.Module):
     def __init__(self, M):
@@ -162,7 +164,7 @@ class VAEENSEMBLE(nn.Module):
         self.decoders = nn.ModuleList([BernoulliDecoder(get_decoder()) for _ in range(num_models)])
     
     def sample_decoder(self, num_samples=1):
-        return (self.decoders[i] for i in np.random.choice(self.num_models, num_samples, replace=False))
+        return (self.decoders[i] for i in np.random.choice(self.num_models, num_samples, replace=self.num_models==1))
 
     def elbo(self, x):
         q = self.encoder(x)
@@ -179,39 +181,20 @@ class VAEENSEMBLE(nn.Module):
         decoder, = self.sample_decoder()
         return decoder(z).sample()
 
-    def get_shortest_curve(
-        self,
-        z0,
-        z1,
-        num_curve_points,
-        emb_dim,
-        curve_degree,
-        num_montecarlo_samples=1,
-        return_initial_curve: bool = False,
-        return_final_weights: bool = False,
-        decode_returned_curve: bool = False,
-        optimizer_kwargs: dict = dict()
-    ):
-        return get_shortest_path(
-            z0,
-            z1,
-            num_curve_points,
-            emb_dim=emb_dim,
-            curve_degree=curve_degree,
-            _get_curve_energy=partial(self.get_curve_energy, num_montecarlo_samples=num_montecarlo_samples),
-            return_initial_curve=return_initial_curve,
-            return_final_weights=return_final_weights,
-            decode_returned_curve=decode_returned_curve,
-            optimizer_kwargs=optimizer_kwargs)
+    def sample_energy(self, z, num_montecarlo_samples=100) -> torch.Tensor:
+        divergense = 0
+        for z_i, z_j in zip(z[:-1], z[1:]):
+            for _ in range(num_montecarlo_samples):
+                decoder_1, decoder_2 = self.sample_decoder(2)
+                divergense += KL(decoder_1(z_i), decoder_2(z_j))
+        return divergense / num_montecarlo_samples
 
-    def get_curve_energy(self, *, weights, point_0, point_1, n, num_montecarlo_samples=1, metric, decoder):
-        z = get_curve(weights, point_0, point_1, n)
-
-        kl_div = 0
-        for _ in range(num_montecarlo_samples):
-            decoder1, decoder2 = self.sample_decoder(2)
-            kl_div += td.kl_divergence(decoder1(z), decoder2(z)).sum()
-        return kl_div / num_montecarlo_samples
+    def fewer_decoders(self, num_decoders=10) -> 'VAEENSEMBLE':
+        this = deepcopy(self)
+        this.decoders = this.decoders[:num_decoders]
+        this.num_models = num_decoders
+        return this
+        
 
 
 def train(model, optimizer, data_loader, epochs, device):
@@ -288,6 +271,16 @@ def get_latents(model: VAE, mnist_train_loader: torch.utils.data.DataLoader, dev
     return latents, labels
 
 
+@torch.no_grad()
+def get_entropy(model: VAE, x_resolution: int, y_resolution: int, _view: tuple[tuple[int, int], tuple[int, int]], device: str):
+    xs = np.linspace(*_view[0], x_resolution)
+    ys = np.linspace(*_view[1], y_resolution)
+    mesh_batch = torch.tensor(np.meshgrid(xs, ys), device=device).float()
+    mesh_batch = einops.rearrange(mesh_batch, 'd x y -> (x y) d')
+    entropy: torch.Tensor = model.decoder(mesh_batch).entropy()
+    return - einops.rearrange(entropy, '(x y) -> x y', x=x_resolution)
+
+
 def main():
     from torchvision import datasets, transforms
     import glob
@@ -296,7 +289,7 @@ def main():
     # Parse arguments
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='part-b', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--mode', type=str, default='part-a', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='../assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--plot-dir', type=str, default='../assets/', help='file to save latent plot in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -387,11 +380,20 @@ def main():
         import matplotlib.colors as mcolors
 
         scatter_opacity = 0.2
-        curve_degree = 6
-        num_curve_points = 200
-        num_curves = 20
-        num_montecarlo_samples = 100 # for ensemble
-        optimizer_kwargs = dict(lr=1e-3, max_iter=1000, line_search_fn='strong_wolfe')
+        num_curves = 0#10
+        num_montecarlo_samples = 1 # for ensemble
+        verbose_energies = False
+
+        curve_fitter_class = PiecewiseCurveFitter
+        curve_fitter_class = PolynomialCurveFitter
+
+        curve_config = CurveConfig(
+            num_points=10,
+            emb_dim=2,
+            curve_degree=3,
+            # optimizer_kwargs=dict(lr=1, max_iter=100000, line_search_fn='strong_wolfe')
+            optimizer_kwargs=dict(epochs=100, lr=1e-1)
+        )
 
         ## Load trained model
         if args.mode == 'part-b':
@@ -405,17 +407,18 @@ def main():
         latents_np, labels_np = latents.detach().cpu().numpy(), labels.detach().cpu().numpy()
 
         ## Plot training data
-        plt.figure()
-        plt.title('Latent space')
-        plt.xlabel('$z_1$')
-        plt.ylabel('$z_2$')
         colors = np.array([f'C{i}' for i in range(num_classes)])[labels_np]
-        plt.scatter(latents_np[:, 0], latents_np[:, 1], c=colors, alpha=scatter_opacity)
+        
         
         markerfacecolor = lambda idx: list(mcolors.TABLEAU_COLORS.values())[idx] + f'{hex(int(255*scatter_opacity)):<04}'[2:]
         legend_handles = [Line2D([0], [0], label=i, marker='o', linestyle='', markeredgecolor=f'C{i}', markerfacecolor=markerfacecolor(i)) for i in range(num_classes)]
 
         if args.mode == 'plot':
+            plt.figure()
+            plt.title('Latent space')
+            plt.xlabel('$z_1$')
+            plt.ylabel('$z_2$')
+            plt.scatter(latents_np[:, 0], latents_np[:, 1], c=colors, alpha=scatter_opacity)
             plt.legend(handles=legend_handles)
             plt.savefig(os.path.join(args.plot_dir, 'latent_space.pdf'))
             plt.show()
@@ -424,14 +427,29 @@ def main():
         elif args.mode == 'part-a':
             # Plot random geodesics
             curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
+            curve_config.decoder = lambda z: model.decoder(z).mean.view(-1, 28**2) # energy from euclidian distance
+            curve_config.decoder = lambda z: [model.decoder(z_i) for z_i in z] # energy from Fisher-Rao
+            curve_fitter = curve_fitter_class(curve_config, device=device, verbose_energies=verbose_energies)
+
+            x_resolution = y_resolution = 100
+            _dist = 7
+            _view = ((-_dist, _dist), (-_dist, _dist))
+            entropy = get_entropy(model, x_resolution, y_resolution, _view, device)
+
+            pos = plt.matshow(entropy.cpu().numpy(), extent=[*_view[0], *_view[1]], cmap='viridis', origin='lower')
+            plt.scatter(latents_np[:, 0], latents_np[:, 1], c=colors, alpha=scatter_opacity, s=1)
+            plt.colorbar(pos)
+
             for k in tqdm(range(num_curves), "Generating geodesics"):
                 i = curve_indices[k, 0]
                 j = curve_indices[k, 1]
                 z0 = latents[i]
                 z1 = latents[j]
                 # TODO: Compute, and plot geodesic between z0 and z1
-                decoder = lambda z: model.decoder(z).mean.view(z.shape[0], 784)
-                curve = get_shortest_path(z0, z1, num_curve_points, emb_dim=args.latent_dim, curve_degree=curve_degree, decoder=decoder).detach().cpu().numpy()
+                curve_fitter.reset(z0, z1)
+                curve_fitter.fit()
+                curve = curve_fitter.points.detach().cpu().numpy()
+                
                 z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
                 plt.plot(curve[:, 0], curve[:, 1], c='k')
                 plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='k')
@@ -440,19 +458,46 @@ def main():
                                 Line2D([0], [0], label='endpoints', linestyle='', marker='o', markeredgecolor='k', markerfacecolor='k')))
 
             plt.legend(handles=legend_handles)
+            plt.title('Latent space')
+            plt.xlabel('$z_1$')
+            plt.ylabel('$z_2$')
             plt.savefig(os.path.join(args.plot_dir, 'latent_space_part_a.pdf'))
             plt.show()
             return
         
         elif args.mode == 'part-b':
-
             curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2
+
+            curve_config.curve_to_energy = Curve2Energy.PASS
+            curve_config.optimizer_class = OptimizerClass.ADAM
+            curve_config.decoder = lambda z: model.sample_energy(z, num_montecarlo_samples)
+
+            curve_fitter = curve_fitter_class(curve_config, device=device, verbose_energies=verbose_energies)
+
+            x_resolution = y_resolution = 100
+            _dist = 7
+            _view = ((-_dist, _dist), (-_dist, _dist))
+
+            entropies = list()
+            for _decoder in model.decoders:
+                _model = VAE(model.prior, _decoder, model.encoder).to(device).eval()
+                entropies.append(get_entropy(_model, x_resolution, y_resolution, _view, device))
+            entropy = torch.stack(entropies).mean(dim=0)
+            pos = plt.matshow(entropy.cpu().numpy(), extent=[*_view[0], *_view[1]], cmap='viridis', origin='lower')
+            plt.scatter(latents_np[:, 0], latents_np[:, 1], c=colors, alpha=scatter_opacity, s=1)
+            plt.colorbar(pos)
+
+            curves_10_decoders = list()
             for k in tqdm(range(num_curves), "Generating geodesics"):
                 i = curve_indices[k, 0]
                 j = curve_indices[k, 1]
                 z0 = latents[i]
                 z1 = latents[j]
-                curve = model.get_shortest_curve(z0, z1, num_curve_points, args.latent_dim, curve_degree, num_montecarlo_samples=num_montecarlo_samples, optimizer_kwargs=optimizer_kwargs).detach().cpu().numpy()
+                curve_fitter.reset(z0, z1)
+                curve_fitter.fit()
+                curve = curve_fitter.points.detach().cpu().numpy()
+                curves_10_decoders.append(curve)
+
                 z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
                 plt.plot(curve[:, 0], curve[:, 1], c='k')
                 plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='k')
@@ -460,11 +505,46 @@ def main():
             legend_handles.extend((Line2D([0], [0], label='geodesic', linestyle='-', color='k'),
                                 Line2D([0], [0], label='endpoints', linestyle='', marker='o', markeredgecolor='k', markerfacecolor='k')))
 
+            plt.title('Latent space')
+            plt.xlabel('$z_1$')
+            plt.ylabel('$z_2$')
             plt.legend(handles=legend_handles)
             plt.savefig(os.path.join(args.plot_dir, 'latent_space_part_b.pdf'))
             plt.show()
-            return
 
+            list_of_lists_of_curves = list()
+            num_models_list = list(range(1,9))
+            for num_decoders in num_models_list:
+                _model = model.fewer_decoders(num_decoders)
+                curve_fitter.decoder = lambda z: _model.sample_energy(z, num_montecarlo_samples)
+                _curves = list()
+                for k in tqdm(range(num_curves), "Generating geodesics"):
+                    i = curve_indices[k, 0]
+                    j = curve_indices[k, 1]
+                    z0 = latents[i]
+                    z1 = latents[j]
+                    curve_fitter.reset(z0, z1)
+                    curve_fitter.fit()
+                    curve = curve_fitter.points.detach().cpu().numpy()
+                    _curves.append(curve)
+
+                    z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
+                    plt.plot(curve[:, 0], curve[:, 1], c='k')
+                    plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='k')
+                list_of_lists_of_curves.append(_curves)
+            list_of_lists_of_curves.append(curves_10_decoders)
+
+            _func = partial(proximity, latent=latents)
+            mean_proximity = [np.mean([_func(curve) for curve in curves]) for curves in list_of_lists_of_curves]
+            plt.figure()
+            plt.plot(num_models_list, mean_proximity, label='mean proximity')
+            plt.xlabel('number of decoders')
+            plt.ylabel('mean proximity')
+            plt.legend()
+            plt.savefig(os.path.join(args.plot_dir, 'mean_proximity.pdf'))
+            plt.show()
+
+            return
 
 
 if __name__ == '__main__':
