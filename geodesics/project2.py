@@ -385,7 +385,7 @@ def main():
 ###### we did the rest of this file.
     
     elif args.mode == 'train-ensemble':
-        num_ensemble = 10
+        num_ensemble = 10 #TODO: make this an argument?
         
         model = VAEENSEMBLE(prior, new_decoder, encoder, num_models=num_ensemble).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -399,7 +399,7 @@ def main():
 
         scatter_opacity = 0.5
         num_curves = 8
-        num_montecarlo_samples = 1 # for ensemble # TODO: what the hell is this?????
+        num_montecarlo_samples = 1 # for ensemble # TODO: Make this an argument? TODO: I don't like that it is one?? have we tested with more than 1?
         verbose_energies = False
 
         curve_fitter_class = PolynomialCurveFitter
@@ -446,7 +446,7 @@ def main():
                 torch.random.manual_seed(4269)  # Specify the seed value
                 curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2 # TODO: maybe rewrite with `choice` to avoid curves starting and stopping in the same point.
             #curve_config.decoder = lambda z: model.decoder(z).mean.view(-1, 28**2) # energy from euclidian distance # TODO: replace mean with sample? - we are gonna compute KL divergences later?? so maybe neither make sense?
-            curve_config.decoder = lambda z: [model.decoder(z_i) for z_i in z] # energy from Fisher-Rao # TODO: Make into argument # TODO: why not just make one forward pass?
+            curve_config.decoder = lambda z: [model.decoder(z_i) for z_i in z] # energy from Fisher-Rao # TODO: Make into argument 
             curve_fitter = curve_fitter_class(curve_config, device=device, verbose_energies=verbose_energies)
 
             x_resolution = y_resolution = 100*2
@@ -521,7 +521,6 @@ def main():
                 plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c=colors[k], markersize=3)
                 
                 curve_fitter.config.curve_to_energy = Curve2Energy.KL
-                curve_fitter.config.decoder = lambda z: [model.decoder(z_i) for z_i in z] # energy from Fisher-Rao # TODO: Make into argument # TODO: why not just make one forward pass?
                 curve_fitter.decoder = lambda z: [model.decoder(z_i) for z_i in z] # energy from Fisher-Rao # TODO: Make into argument # TODO: why not just make one forward pass?
                 curve_fitter.fit()
                 curve = curve_fitter.points.detach().cpu().numpy()
