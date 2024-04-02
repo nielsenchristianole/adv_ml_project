@@ -445,6 +445,7 @@ def main():
             with torch.random.fork_rng():
                 torch.random.manual_seed(4269)  # Specify the seed value
                 curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2 # TODO: maybe rewrite with `choice` to avoid curves starting and stopping in the same point.
+
             #curve_config.decoder = lambda z: model.decoder(z).mean.view(-1, 28**2) # energy from euclidian distance # TODO: replace mean with sample? - we are gonna compute KL divergences later?? so maybe neither make sense?
             curve_config.decoder = lambda z: [model.decoder(z_i) for z_i in z] # energy from Fisher-Rao # TODO: Make into argument # TODO: why not just make one forward pass?
             curve_fitter = curve_fitter_class(curve_config, device=device, verbose_energies=verbose_energies)
@@ -459,6 +460,7 @@ def main():
             plt.scatter(latents_np[:, 0], latents_np[:, 1], c=colors, alpha=scatter_opacity, s=10)
             plt.colorbar(pos)
 
+            geodesics_energy = list()
             for k in tqdm(range(num_curves), "Generating geodesics"):
                 i = curve_indices[k, 0]
                 j = curve_indices[k, 1]
@@ -468,11 +470,13 @@ def main():
                 curve_fitter.reset(z0, z1)
                 curve_fitter.fit()
                 curve = curve_fitter.points.detach().cpu().numpy()
+                geodesics_energy.append(curve_fitter.forward().detach().cpu().numpy())
                 
                 z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
                 plt.plot(curve[:, 0], curve[:, 1], c='k')
                 plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='k', markersize=3)
             
+            print('mean energy', np.mean(geodesics_energy))
             legend_handles.extend((Line2D([0], [0], label='geodesic', linestyle='-', color='k'),
                                 Line2D([0], [0], label='endpoints', linestyle='', marker='o', markeredgecolor='k', markerfacecolor='k')))
 
