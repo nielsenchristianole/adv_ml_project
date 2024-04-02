@@ -192,7 +192,7 @@ class VAEENSEMBLE(nn.Module):
         decoder, = self.sample_decoder()
         return decoder(z).sample()
 
-    def sample_energy(self, z, num_montecarlo_samples=100) -> torch.Tensor:
+    def sample_energy(self, z, num_montecarlo_samples=1) -> torch.Tensor:
         divergense = 0
         for z_i, z_j in zip(z[:-1], z[1:]):
             for _ in range(num_montecarlo_samples):
