@@ -173,6 +173,7 @@ class VAEENSEMBLE(nn.Module):
         self.prior = prior
         self.encoder = encoder
         self.decoders = nn.ModuleList([BernoulliDecoder(get_decoder()) for _ in range(num_models)])
+        self.decoder = self.decoders[0]
     
     def sample_decoder(self, num_samples=1):
         return (self.decoders[i] for i in np.random.choice(self.num_models, num_samples, replace=self.num_models==1))
@@ -303,12 +304,12 @@ def main():
 
     from torchvision import datasets, transforms
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='part-a', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b','part-c'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--mode', type=str, default='part-c', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b','part-c'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='../assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--plot-dir', type=str, default='../assets/', help='file to save latent plot in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
-    parser.add_argument('--epochs', type=int, default=15, metavar='N', help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--epochs', type=int, default=200, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=2, metavar='N', help='dimension of latent variable (default: %(default)s)')
     parser.add_argument('--data-dir', type=str, default='../data', help='where to store and look for data (default: %(default)s)')
 
@@ -504,6 +505,17 @@ def main():
             plt.colorbar(pos)
 
             colors = ['r', 'g', 'b', 'c', 'm', 'y', 'k', 'w']
+            SIGMA = 0.3
+            EPSILON = 1e-1
+            mixture_model = td.MixtureSameFamily(
+                td.Categorical(probs=torch.ones(num_train_data, device=device)/num_train_data),
+                td.Independent(td.Normal(loc=latents, scale=SIGMA*torch.ones_like(latents, device=device)), 1)
+            )
+            def metric(points):
+                n = points.shape[0]
+                log_prob = mixture_model.log_prob(points) # log p(x)
+                m = ((1 / (EPSILON + torch.exp(log_prob))).view(n, 1, 1) * torch.eye(M, device=device).view(1,M,M)).float()
+                return m
             for k in tqdm(range(num_curves), "Generating geodesics"):
                 i = curve_indices[k, 0]
                 j = curve_indices[k, 1]
@@ -511,7 +523,9 @@ def main():
                 z1 = latents[j]
                 # TODO: Compute, and plot geodesic between z0 and z1
                 curve_fitter.config.curve_to_energy = Curve2Energy.SECANT
+                curve_fitter.metric = metric
                 curve_fitter.decoder = lambda z: model.decoder(z).mean.view(-1, 28**2) # energy from euclidian distance # TODO: replace mean with sample? - we are gonna compute KL divergences later?? so maybe neither make sense?
+                curve_fitter.decoder = lambda z: z
                 curve_fitter.reset(z0, z1)
                 curve_fitter.fit()
                 curve_linear = curve_fitter.points.detach().cpu().numpy()
