@@ -398,7 +398,7 @@ def main():
         from matplotlib.lines import Line2D
 
         scatter_opacity = 0.5
-        num_curves = 50
+        num_curves = 8
         num_montecarlo_samples = 1 # for ensemble # TODO: what the hell is this?????
         verbose_energies = False
 
@@ -486,9 +486,10 @@ def main():
     
         elif args.mode == 'part-c':
             # Plot random geodesics, with same seed
-            with torch.random.fork_rng():
-                torch.random.manual_seed(4269)  # Specify the seed value
-                curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2 # TODO: maybe rewrite with `choice` to avoid curves starting and stopping in the same point.
+            #with torch.random.fork_rng():
+            #    torch.random.manual_seed(4269)  # Specify the seed value
+            #    curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2 # TODO: maybe rewrite with `choice` to avoid curves starting and stopping in the same point.
+            curve_indices = torch.randint(num_train_data, (num_curves, 2)) 
             curve_config.decoder = lambda z: model.decoder(z).mean.view(-1, 28**2) # energy from euclidian distance # TODO: replace mean with sample? - we are gonna compute KL divergences later?? so maybe neither make sense?
             curve_fitter = curve_fitter_class(curve_config, device=device, verbose_energies=verbose_energies)
 
@@ -502,6 +503,7 @@ def main():
             plt.scatter(latents_np[:, 0], latents_np[:, 1], c=colors, alpha=scatter_opacity, s=10)
             plt.colorbar(pos)
 
+            colors = ['r', 'g', 'b', 'c', 'm', 'y', 'k', 'w']
             for k in tqdm(range(num_curves), "Generating geodesics"):
                 i = curve_indices[k, 0]
                 j = curve_indices[k, 1]
@@ -515,8 +517,8 @@ def main():
                 curve_linear = curve_fitter.points.detach().cpu().numpy()
                 
                 z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
-                plt.plot(curve_linear[:, 0], curve_linear[:, 1], c='r')
-                plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='r', markersize=3)
+                plt.plot(curve_linear[:, 0], curve_linear[:, 1], c=colors[k], linestyle='--')
+                plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c=colors[k], markersize=3)
                 
                 curve_fitter.config.curve_to_energy = Curve2Energy.KL
                 curve_fitter.config.decoder = lambda z: [model.decoder(z_i) for z_i in z] # energy from Fisher-Rao # TODO: Make into argument # TODO: why not just make one forward pass?
@@ -524,9 +526,8 @@ def main():
                 curve_fitter.fit()
                 curve = curve_fitter.points.detach().cpu().numpy()
                 
-                z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
-                plt.plot(curve[:, 0], curve[:, 1], c='k')
-                plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='k', markersize=3)
+                plt.plot(curve[:, 0], curve[:, 1], c=colors[k])
+                plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c=colors[k], markersize=3)
             
             legend_handles.extend((Line2D([0], [0], label='geodesic', linestyle='-', color='k'),
                                 Line2D([0], [0], label='endpoints', linestyle='', marker='o', markeredgecolor='k', markerfacecolor='k')))
@@ -535,8 +536,8 @@ def main():
             plt.title('Latent space')
             plt.xlabel('$z_1$')
             plt.ylabel('$z_2$')
-            plt.savefig(os.path.join(args.plot_dir, 'latent_space_part_a.pdf'))
-            plt.show()
+            plt.savefig(os.path.join(args.plot_dir, 'latent_space_part_c.pdf'))
+            #plt.show()
             return
         
         elif args.mode == 'part-b':
