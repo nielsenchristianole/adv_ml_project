@@ -96,16 +96,6 @@ class CurveFitter(nn.Module, ABC):
     def kl_energy(self, points: list[Distribution]) -> torch.Tensor:
         energy = sum(KL(p, q) for p, q in zip(points[:-1], points[1:])) # eq: 12.26
         return energy
-    
-    def infer_energy(self, points: torch.Tensor) -> torch.Tensor:
-        points = self.decoded_points
-        match points:
-            case torch.Tensor():
-                return self.secant_energy(points)
-            case list():
-                return self.kl_energy(points)
-            case _:
-                raise ValueError(f"Unknown type {type(points)}")
 
     def forward(self) -> torch.Tensor:
         points = self.decoded_points
@@ -117,8 +107,7 @@ class CurveFitter(nn.Module, ABC):
             case Curve2Energy.PASS:
                 energy = points
             case Curve2Energy.INFER:
-                raise ValueError("Please don't infer energy - specify it instead")
-                energy = self.infer_energy(points)
+                raise DeprecationWarning("Please don't infer energy - specify it instead")
             case _:
                 raise ValueError(f"Unknown curve_to_energy {self.config.curve_to_energy}")
         if self.verbose_energies: print(energy)
