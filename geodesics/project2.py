@@ -303,7 +303,7 @@ def main():
 
     from torchvision import datasets, transforms
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='part-a', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--mode', type=str, default='part-a', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b','part-c'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='../assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--plot-dir', type=str, default='../assets/', help='file to save latent plot in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -392,7 +392,7 @@ def main():
         train(model, optimizer, mnist_train_loader, args.epochs * num_ensemble, args.device)
         torch.save(model.state_dict(), ensemble_model_path)
 
-    elif args.mode in ('plot', 'part-a', 'part-b'):
+    elif args.mode in ('plot', 'part-a', 'part-b', 'part-c'):
         import matplotlib.colors as mcolors
         import matplotlib.pyplot as plt
         from matplotlib.lines import Line2D
@@ -466,6 +466,61 @@ def main():
                 z1 = latents[j]
                 # TODO: Compute, and plot geodesic between z0 and z1
                 curve_fitter.reset(z0, z1)
+                curve_fitter.fit()
+                curve = curve_fitter.points.detach().cpu().numpy()
+                
+                z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
+                plt.plot(curve[:, 0], curve[:, 1], c='k')
+                plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='k', markersize=3)
+            
+            legend_handles.extend((Line2D([0], [0], label='geodesic', linestyle='-', color='k'),
+                                Line2D([0], [0], label='endpoints', linestyle='', marker='o', markeredgecolor='k', markerfacecolor='k')))
+
+            plt.legend(handles=legend_handles)
+            plt.title('Latent space')
+            plt.xlabel('$z_1$')
+            plt.ylabel('$z_2$')
+            plt.savefig(os.path.join(args.plot_dir, 'latent_space_part_a.pdf'))
+            plt.show()
+            return
+    
+        elif args.mode == 'part-c':
+            # Plot random geodesics, with same seed
+            with torch.random.fork_rng():
+                torch.random.manual_seed(4269)  # Specify the seed value
+                curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2 # TODO: maybe rewrite with `choice` to avoid curves starting and stopping in the same point.
+            curve_config.decoder = lambda z: model.decoder(z).mean.view(-1, 28**2) # energy from euclidian distance # TODO: replace mean with sample? - we are gonna compute KL divergences later?? so maybe neither make sense?
+            curve_fitter = curve_fitter_class(curve_config, device=device, verbose_energies=verbose_energies)
+
+            x_resolution = y_resolution = 100*2
+            _dist = 8
+            _view = ((-_dist, _dist), (-_dist, _dist))
+            entropy = get_entropy(model, x_resolution, y_resolution, _view, device) # TODO: why do we use entropy??
+
+            # plots latent variables
+            pos = plt.matshow(entropy.cpu().numpy(), extent=[*_view[0], *_view[1]], cmap='viridis', origin='lower')
+            plt.scatter(latents_np[:, 0], latents_np[:, 1], c=colors, alpha=scatter_opacity, s=10)
+            plt.colorbar(pos)
+
+            for k in tqdm(range(num_curves), "Generating geodesics"):
+                i = curve_indices[k, 0]
+                j = curve_indices[k, 1]
+                z0 = latents[i]
+                z1 = latents[j]
+                # TODO: Compute, and plot geodesic between z0 and z1
+                curve_fitter.config.curve_to_energy = Curve2Energy.SECANT
+                curve_fitter.decoder = lambda z: model.decoder(z).mean.view(-1, 28**2) # energy from euclidian distance # TODO: replace mean with sample? - we are gonna compute KL divergences later?? so maybe neither make sense?
+                curve_fitter.reset(z0, z1)
+                curve_fitter.fit()
+                curve_linear = curve_fitter.points.detach().cpu().numpy()
+                
+                z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
+                plt.plot(curve_linear[:, 0], curve_linear[:, 1], c='r')
+                plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='r', markersize=3)
+                
+                curve_fitter.config.curve_to_energy = Curve2Energy.KL
+                curve_fitter.config.decoder = lambda z: [model.decoder(z_i) for z_i in z] # energy from Fisher-Rao # TODO: Make into argument # TODO: why not just make one forward pass?
+                curve_fitter.decoder = lambda z: [model.decoder(z_i) for z_i in z] # energy from Fisher-Rao # TODO: Make into argument # TODO: why not just make one forward pass?
                 curve_fitter.fit()
                 curve = curve_fitter.points.detach().cpu().numpy()
                 
