@@ -86,10 +86,11 @@ class CurveFitter(nn.Module, ABC):
         return self.decoder(self.points)
 
     def secant_energy(self, points: torch.Tensor) -> torch.Tensor:
+        points = torch.stack([point.rsample() for point in points])
         secant = torch.diff(points, dim=0)
         secant_mid_point = points[:-1] + secant / 2
-        secant = secant[..., None]
-        _metric = self.metric(secant_mid_point)
+        secant = secant[..., None].view(9,28,28)
+        _metric = self.metric(secant_mid_point.view(9,28,28))
         energies = torch.permute(secant, (0, 2, 1)) @ _metric @ secant # we assume constant metric for each secant.
         energy = energies.sum()
         return energy
@@ -238,8 +239,9 @@ class PiecewiseCurveFitter(CurveFitter):
     def points(self) -> torch.Tensor:
         return torch.cat([self.start_point[None, :], self.optimizable_parameter, self.end_point[None, :]], dim=0)
     
-    def reset(self, start_point: torch.Tensor, end_point: torch.Tensor) -> None:
+    def reset(self, start_point: torch.Tensor, end_point: torch.Tensor, points_ = None) -> None:
         self.start_point = start_point
         self.end_point = end_point
         self.is_fitted = False
-        self.optimizable_parameter = self.get_intermidiate_points()
+        self.optimizable_parameter = points_ if points_ is not None else self.get_intermidiate_points()
+        print(self.optimizable_parameter,type(self.optimizable_parameter))

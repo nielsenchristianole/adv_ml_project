@@ -28,6 +28,7 @@ if os.path.split(os.getcwd())[-1] == 'adv_ml_project':
 from copy import deepcopy
 
 import einops
+from curve_fitter import Curve2Energy
 
 
 class GaussianPrior(nn.Module):
@@ -303,7 +304,7 @@ def main():
 
     from torchvision import datasets, transforms
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='part-b', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--mode', type=str, default='part-c', choices=['train', 'plot', 'part-a', 'train-ensemble', 'part-b','part-c'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--model', type=str, default='../assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--plot-dir', type=str, default='../assets/', help='file to save latent plot in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cuda' if torch.cuda.is_available() else 'cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
@@ -375,8 +376,11 @@ def main():
     # Choose mode to run
     if args.mode == 'train':
         # Define optimizer
+        model_ensemble = VAEENSEMBLE(prior, new_decoder, encoder, num_models=10).to(device)
+        model_ensemble.load_state_dict(torch.load(ensemble_model_path, map_location=torch.device(args.device)))
 
         # Train model
+        model.encoder = model_ensemble.encoder.requires_grad_(False)
         train(model, optimizer, mnist_train_loader, args.epochs, args.device)
 
         # Save model
@@ -392,7 +396,7 @@ def main():
         train(model, optimizer, mnist_train_loader, args.epochs * num_ensemble, args.device)
         torch.save(model.state_dict(), ensemble_model_path)
 
-    elif args.mode in ('plot', 'part-a', 'part-b'):
+    elif args.mode in ('plot', 'part-a', 'part-b', 'part-c'):
         import matplotlib.colors as mcolors
         import matplotlib.pyplot as plt
         from matplotlib.lines import Line2D
@@ -412,7 +416,7 @@ def main():
             optimizer_kwargs=dict(lr=1, max_iter=2*100000, line_search_fn='strong_wolfe')
             # optimizer_kwargs=dict(epochs=100, lr=1e-1)
         )
-
+        
         ## Load trained model
         if args.mode == 'part-b':
             model = VAEENSEMBLE(prior, new_decoder, encoder, num_models=10).to(device)
@@ -468,6 +472,76 @@ def main():
                 z1 = latents[j]
                 # TODO: Compute, and plot geodesic between z0 and z1
                 curve_fitter.reset(z0, z1)
+                curve_fitter.fit()
+                curve = curve_fitter.points.detach().cpu().numpy()
+                geodesics_energy.append(curve_fitter.forward().detach().cpu().numpy())
+                
+                z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
+                plt.plot(curve[:, 0], curve[:, 1], c='k')
+                plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='k', markersize=3)
+            
+            print('mean energy', np.mean(geodesics_energy))
+            legend_handles.extend((Line2D([0], [0], label='geodesic', linestyle='-', color='k'),
+                                Line2D([0], [0], label='endpoints', linestyle='', marker='o', markeredgecolor='k', markerfacecolor='k')))
+
+            plt.legend(handles=legend_handles)
+            plt.title('Latent space')
+            plt.xlabel('$z_1$')
+            plt.ylabel('$z_2$')
+            plt.savefig(os.path.join(args.plot_dir, 'latent_space_part_a.pdf'))
+            plt.show()
+            return
+        
+        elif args.mode == 'part-c':
+            # Plot random geodesics, with same seed
+            with torch.random.fork_rng():
+                torch.random.manual_seed(4269)  # Specify the seed value
+                curve_indices = torch.randint(num_train_data, (num_curves, 2))  # (num_curves) x 2 # TODO: maybe rewrite with `choice` to avoid curves starting and stopping in the same point.
+
+            #curve_config.decoder = lambda z: model.decoder(z).mean.view(-1, 28**2) # energy from euclidian distance # TODO: replace mean with sample? - we are gonna compute KL divergences later?? so maybe neither make sense?
+            curve_config.decoder = lambda z: [model.decoder(z_i) for z_i in z] # energy from Fisher-Rao # TODO: Make into argument # TODO: why not just make one forward pass?
+            curve_fitter = curve_fitter_class(curve_config, device=device, verbose_energies=verbose_energies)
+            
+            curve_config_abstract = CurveConfig(
+                                num_points=10,
+                                emb_dim=2,
+                                curve_degree=3,
+                                optimizer_kwargs=dict(lr=1, max_iter=2*100000, line_search_fn='strong_wolfe'),
+                                curve_to_energy=Curve2Energy.SECANT,
+                                # optimizer_kwargs=dict(epochs=100, lr=1e-1)
+                            )
+            curve_config_abstract.decoder = lambda z: [model.decoder(z_i) for z_i in z] # energy from Fisher-Rao # TODO: Make into argument # TODO: why not just make one forward pass?
+            curve_fitter_abstract = curve_fitter_class(curve_config_abstract, device=device, verbose_energies=verbose_energies)
+
+            x_resolution = y_resolution = 100*2
+            _dist = 8
+            _view = ((-_dist, _dist), (-_dist, _dist))
+            entropy = get_entropy(model, x_resolution, y_resolution, _view, device) # TODO: why do we use entropy??
+
+            # plots latent variables
+            pos = plt.matshow(entropy.cpu().numpy(), extent=[*_view[0], *_view[1]], cmap='viridis', origin='lower')
+            plt.scatter(latents_np[:, 0], latents_np[:, 1], c=colors, alpha=scatter_opacity, s=10)
+            plt.colorbar(pos)
+
+            geodesics_energy = list()
+            for k in tqdm(range(num_curves), "Generating geodesics"):
+                i = curve_indices[k, 0]
+                j = curve_indices[k, 1]
+                z0 = latents[i]
+                z1 = latents[j]
+                
+                # plots abstract geodesics
+                curve_fitter_abstract.reset(z0, z1)
+                curve_fitter_abstract.fit()
+                curve = curve_fitter.points.detach().cpu().numpy()
+                geodesics_energy.append(curve_fitter.forward().detach().cpu().numpy())
+                z0, z1 = z0.detach().cpu().numpy(), z1.detach().cpu().numpy()
+                plt.plot(curve[:, 0], curve[:, 1], c='r')
+                plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c='r', markersize=3)
+                
+                # TODO: Compute, and plot geodesic between z0 and z1
+
+                curve_fitter.reset(z0, z1, torch.nn.Parameter(torch.tensor(curve),requires_grad=True))
                 curve_fitter.fit()
                 curve = curve_fitter.points.detach().cpu().numpy()
                 geodesics_energy.append(curve_fitter.forward().detach().cpu().numpy())
