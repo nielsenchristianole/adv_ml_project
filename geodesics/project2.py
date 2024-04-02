@@ -500,6 +500,7 @@ def main():
             entropy = get_entropy(model, x_resolution, y_resolution, _view, device) # TODO: why do we use entropy??
 
             # plots latent variables
+            plt.figure(figsize=(10, 10))
             pos = plt.matshow(entropy.cpu().numpy(), extent=[*_view[0], *_view[1]], cmap='viridis', origin='lower')
             plt.scatter(latents_np[:, 0], latents_np[:, 1], c=colors, alpha=scatter_opacity, s=10)
             plt.colorbar(pos)
@@ -542,8 +543,8 @@ def main():
                 plt.plot(curve[:, 0], curve[:, 1], c=colors[k])
                 plt.plot([z0[0], z1[0]], [z0[1], z1[1]], 'o', c=colors[k], markersize=3)
             
-            legend_handles.extend((Line2D([0], [0], label='geodesic', linestyle='-', color='k'),
-                                Line2D([0], [0], label='endpoints', linestyle='', marker='o', markeredgecolor='k', markerfacecolor='k')))
+            legend_handles = (Line2D([0], [0], label='Fisher-Rao geodesics', linestyle='-', color='k'),
+                                   Line2D([0], [0], label='inverse density metric', linestyle='--', color='k'))
 
             plt.legend(handles=legend_handles)
             plt.title('Latent space')
