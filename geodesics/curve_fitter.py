@@ -93,7 +93,7 @@ class CurveFitter(nn.Module, ABC):
         energy = energies.sum()
         return energy
     
-    def kl_energy(self, points: torch.Tensor) -> torch.Tensor:
+    def kl_energy(self, points: list[Distribution]) -> torch.Tensor:
         energy = sum(KL(p, q) for p, q in zip(points[:-1], points[1:])) # eq: 12.26
         return energy
     
