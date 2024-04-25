@@ -37,7 +37,6 @@ def init_probs(dataset):
 # %%
 class ErdosRModel:
     def __init__(self, dataset):
-        print('derp')
         self.dataset = dataset
 
         self.graph_size_prob, self.graph_link_prob = init_probs(dataset)
@@ -56,14 +55,15 @@ class ErdosRModel:
 
 # %%
 
-erdos_model = ErdosRModel(dataset=dataset)
+if __name__ == '__main__':
+    erdos_model = ErdosRModel(dataset=dataset)
 
-# Plot histogram
-plt.bar(graph_size_prob.keys(), graph_size_prob.values(), color='skyblue')
-plt.xlabel('Graph Size')
-plt.ylabel('Probability')
-plt.title('Histogram of Graph Size Probabilities')
-# plt.show()  
+    # Plot histogram
+    plt.bar(graph_size_prob.keys(), graph_size_prob.values(), color='skyblue')
+    plt.xlabel('Graph Size')
+    plt.ylabel('Probability')
+    plt.title('Histogram of Graph Size Probabilities')
+    plt.show()
 
-# print(erdos_model)
-print(erdos_model.generate(batch_size=1)[0].todense())
+    # print(erdos_model)
+    print(erdos_model.generate(batch_size=2)[0].todense())
