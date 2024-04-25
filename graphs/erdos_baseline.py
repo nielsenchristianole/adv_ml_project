@@ -55,8 +55,9 @@ class ErdosRModel:
 
 # %%
 
+erdos_model = ErdosRModel(dataset=dataset)
+
 if __name__ == '__main__':
-    erdos_model = ErdosRModel(dataset=dataset)
 
     # Plot histogram
     plt.bar(graph_size_prob.keys(), graph_size_prob.values(), color='skyblue')
