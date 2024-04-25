@@ -96,7 +96,7 @@ def plot_node_degree_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.A
         ax.legend()
         ax.set_xlabel('Node degree')
         ax.set_ylabel('Frequency')
-        ax.set_title('Node degree histogram')
+        ax.set_title(f'Node degree{"" if mean_over_graph else "*"}')
 
     return ax
 
@@ -114,14 +114,18 @@ def plot_clustering_coefficient_histogram(*data: tuple[str, np.ndarray], ax: Opt
     for label, adjacency_matrix in data:
         assert len(adjacency_matrix.shape) == 3
         graphs = graph_from_numpy_batch(adjacency_matrix)
-        clustering_coefficients = [nx.average_clustering(gr) for gr in graphs]
+        if mean_over_graph:
+            clustering_coefficients = [nx.average_clustering(gr) for gr in graphs]
+        else:
+            clustering_coefficients = [nx.clustering(gr) for gr in graphs]
+            clustering_coefficients = np.concatenate([np.array(list(d.values())) for d in clustering_coefficients])
         ax.hist(clustering_coefficients, label=label, **kwargs)
 
     if set_legent:
         ax.legend()
         ax.set_xlabel('Clustering coefficient')
         ax.set_ylabel('Frequency')
-        ax.set_title('Clustering coefficient histogram')
+        ax.set_title(f'Clustering coefficient{"" if mean_over_graph else "*"}')
 
     return ax
 
@@ -160,7 +164,7 @@ def plot_eigenvector_centrality(*data: tuple[str, np.ndarray], ax: Optional[plt.
         ax.legend()
         ax.set_xlabel('Eigenvector centrality')
         ax.set_ylabel('Frequency')
-        ax.set_title('Eigenvector centrality histogram')
+        ax.set_title(f'Eigenvector centrality{"" if mean_over_graph else "*"}')
 
     return ax
 
