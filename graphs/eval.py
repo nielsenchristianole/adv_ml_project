@@ -78,9 +78,6 @@ def plot_node_degree_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.A
 
     if ax is None:
         ax = plt.gca()
-        ax.set_xlabel('Node degree')
-        ax.set_ylabel('Frequency')
-        ax.set_title('Node degree histogram')
 
     kwargs = dict(
         density=True
@@ -97,18 +94,18 @@ def plot_node_degree_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.A
 
     if set_legent:
         ax.legend()
+        ax.set_xlabel('Node degree')
+        ax.set_ylabel('Frequency')
+        ax.set_title('Node degree histogram')
 
     return ax
 
 
-def plot_clustering_coefficient_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.Axes]=None, set_legent: bool=True, **kwargs):
+def plot_clustering_coefficient_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.Axes]=None, set_legent: bool=True, mean_over_graph: bool=False, **kwargs):
     """Give a list of tuples (label, adjacency_matrix), plot the node degree histogram."""
 
     if ax is None:
         ax = plt.gca()
-        ax.set_xlabel('Clustering coefficient')
-        ax.set_ylabel('Frequency')
-        ax.set_title('Clustering coefficient histogram')
 
     kwargs = dict(
         density=True
@@ -122,8 +119,21 @@ def plot_clustering_coefficient_histogram(*data: tuple[str, np.ndarray], ax: Opt
 
     if set_legent:
         ax.legend()
+        ax.set_xlabel('Clustering coefficient')
+        ax.set_ylabel('Frequency')
+        ax.set_title('Clustering coefficient histogram')
 
     return ax
+
+
+def calculate_eigenvector_centrality(graph: nx.Graph) -> dict[int, float]:
+    """Calculate the eigenvector centrality of a graph."""
+    for pow in range(1, 6):
+        try:
+            return nx.eigenvector_centrality(graph, max_iter=10**pow)
+        except nx.PowerIterationFailedConvergence:
+            pass
+    raise nx.PowerIterationFailedConvergence
 
 
 def plot_eigenvector_centrality(*data: tuple[str, np.ndarray], ax: Optional[plt.Axes]=None, set_legent: bool=True, mean_over_graph: bool=False, **kwargs):
@@ -131,9 +141,6 @@ def plot_eigenvector_centrality(*data: tuple[str, np.ndarray], ax: Optional[plt.
 
     if ax is None:
         ax = plt.gca()
-        ax.set_xlabel('Eigenvector centrality')
-        ax.set_ylabel('Frequency')
-        ax.set_title('Eigenvector centrality histogram')
 
     kwargs = dict(
         density=True
@@ -142,7 +149,7 @@ def plot_eigenvector_centrality(*data: tuple[str, np.ndarray], ax: Optional[plt.
     for label, adjacency_matrix in data:
         assert len(adjacency_matrix.shape) == 3
         graphs = graph_from_numpy_batch(adjacency_matrix)
-        eigenvector_centralities = [nx.eigenvector_centrality(gr, max_iter=1000) for gr in graphs]
+        eigenvector_centralities = [calculate_eigenvector_centrality(gr) for gr in graphs]
         if mean_over_graph:
             eigenvector_centralities = [np.array(list(d.values())).mean() for d in eigenvector_centralities]
         else:
@@ -151,6 +158,9 @@ def plot_eigenvector_centrality(*data: tuple[str, np.ndarray], ax: Optional[plt.
 
     if set_legent:
         ax.legend()
+        ax.set_xlabel('Eigenvector centrality')
+        ax.set_ylabel('Frequency')
+        ax.set_title('Eigenvector centrality histogram')
 
     return ax
 
