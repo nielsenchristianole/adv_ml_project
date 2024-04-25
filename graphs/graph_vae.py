@@ -41,7 +41,7 @@ class GaussianPrior(nn.Module):
         """
         return td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
 
-class GaussianEncoder(nn.Module):
+class GaussianEncoderMessagePassing(nn.Module):
     def __init__(self, node_feature_dim, state_dim, num_message_passing_rounds, M):
         """
         Define a Gaussian encoder distribution based on a given encoder network.
@@ -52,7 +52,7 @@ class GaussianEncoder(nn.Module):
            feature_dim1, feature_dim2)` and output a tensor of dimension
            `(batch_size, 2M)`, where M is the dimension of the latent space.
         """
-        super(GaussianEncoder, self).__init__()
+        super(GaussianEncoderMessagePassing, self).__init__()
 
         # Define dimensions and other hyperparameters
         self.node_feature_dim = node_feature_dim # 7
@@ -135,16 +135,62 @@ class GaussianEncoder(nn.Module):
         mean, std = torch.chunk(self.encoder_net(graph_state), 2, dim=-1)
         return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)), 1) #dim: 100, M
 
-    # def forward(self, x):
-    #     """
-    #     Given a batch of data, return a Gaussian distribution over the latent space.
+class GaussianEncoderConvolution(nn.Module):
+    def __init__(self, node_feature_dim, filter_length,M):
+        super().__init__()
 
-    #     Parameters:
-    #     x: [torch.Tensor] 
-    #        A tensor of dimension `(batch_size, feature_dim1, feature_dim2)`
-    #     """
-    #     mean, std = torch.chunk(self.encoder_net(x), 2, dim=-1)
-    #     return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)), 1)
+        # Define dimensions and other hyperparameters
+        self.node_feature_dim = node_feature_dim
+        self.filter_length = filter_length
+
+        # Define graph filter
+        self.h = torch.nn.Parameter(1e-5*torch.randn(filter_length))
+        self.h.data[0] = 1.
+
+        # State output network
+        self.output_net = torch.nn.Linear(self.node_feature_dim, 2*M)
+
+        self.cached = False
+
+    def forward(self, x, edge_index, batch):
+        """Evaluate neural network on a batch of graphs.
+
+        Parameters
+        ----------
+        x : torch.tensor (num_nodes x num_features)
+            Node features.
+        edge_index : torch.tensor (2 x num_edges)
+            Edges (to-node, from-node) in all graphs.
+        batch : torch.tensor (num_nodes)
+            Index of which graph each node belongs to.
+
+        Returns
+        ------- 
+        out : torch tensor (num_graphs)
+            Neural network output for each graph.
+
+        """
+
+        # Compute adjacency matrices and node features per graph
+        A = to_dense_adj(edge_index, batch)
+        X, idx = to_dense_batch(x, batch)
+ 
+        # ---------------------------------------------------------------------------------------------------------
+
+        # Implementation in spectral domain
+        L, U = torch.linalg.eigh(A)        
+        exponentiated_L = L.unsqueeze(2).pow(torch.arange(self.filter_length, device=L.device))
+        diagonal_filter = (self.h[None,None] * exponentiated_L).sum(2, keepdim=True)
+        node_state = U @ (diagonal_filter * (U.transpose(1, 2) @ X))
+
+        # ---------------------------------------------------------------------------------------------------------
+
+        # Aggregate the node states
+        graph_state = node_state.sum(1)
+
+        # Output
+        mean, std = torch.chunk(self.output_net(graph_state), 2, dim=-1)
+        return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)), 1) #dim: 100, M
 
 
 class BernoulliDecoder(nn.Module):
@@ -235,7 +281,6 @@ class VAE(nn.Module):
         
 
         A_perm = torch.tril(A_perm, diagonal=-1) # dim: 5, 100, 28, 28
-        x_star = self.decoder(z, batch)
 
         log_prob = self.decoder(z, batch).log_prob(A_perm) # 5, 100
         log_prob = torch.max(log_prob,axis=0)[0]
@@ -354,6 +399,7 @@ if __name__ == "__main__":
     from torchvision.utils import make_grid, save_image
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--encoder', type=str, default='mm', choices=['mm','conv'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
@@ -400,7 +446,10 @@ if __name__ == "__main__":
     decoder = BernoulliDecoder(decoder_net)
     
     # Define VAE model
-    encoder = GaussianEncoder(node_feature_dim, state_dim, num_message_passing_rounds, M)
+    if args.encoder == 'conv':
+        encoder = GaussianEncoderConvolution(node_feature_dim, 5, M)
+    else:
+        encoder = GaussianEncoderMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M)
     model = VAE(prior, decoder, encoder).to(device)
 
     # Choose mode to run
