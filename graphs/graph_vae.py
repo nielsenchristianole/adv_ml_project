@@ -42,7 +42,7 @@ class GaussianPrior(nn.Module):
         return td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
 
 class GaussianEncoder(nn.Module):
-    def __init__(self, node_feature_dim, state_dim, num_message_passing_rounds):
+    def __init__(self, node_feature_dim, state_dim, num_message_passing_rounds, M):
         """
         Define a Gaussian encoder distribution based on a given encoder network.
 
@@ -83,7 +83,7 @@ class GaussianEncoder(nn.Module):
             ) for _ in range(num_message_passing_rounds)])
         
         # State output network
-        self.encoder_net = torch.nn.Linear(self.state_dim, 2)
+        self.encoder_net = torch.nn.Linear(self.state_dim, 2*M)
 
     def forward(self, x, edge_index, batch):
         """Evaluate neural network on a batch of graphs.
@@ -108,8 +108,8 @@ class GaussianEncoder(nn.Module):
         num_nodes = batch.shape[0]
 
         # Initialize node state from node features
-        #state = self.input_net(x)
-        state = x.new_zeros([num_nodes, self.state_dim]) # Uncomment to disable the use of node features
+        state = self.input_net(x)
+        #state = x.new_zeros([num_nodes, self.state_dim]) # Uncomment to disable the use of node features
 
         # Loop over message passing rounds
         for r in range(self.num_message_passing_rounds):
@@ -133,7 +133,7 @@ class GaussianEncoder(nn.Module):
         graph_state = torch.index_add(graph_state, 0, batch, state)
 
         mean, std = torch.chunk(self.encoder_net(graph_state), 2, dim=-1)
-        return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)), 1) #dim: 100, 1
+        return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)), 1) #dim: 100, M
 
     # def forward(self, x):
     #     """
@@ -161,7 +161,7 @@ class BernoulliDecoder(nn.Module):
         super(BernoulliDecoder, self).__init__()
         self.decoder_net = decoder_net
 
-    def forward(self, z):
+    def forward(self, z, batch):
         """
         Given a batch of latent variables, return a Bernoulli distribution over the data space.
 
@@ -170,8 +170,17 @@ class BernoulliDecoder(nn.Module):
            A tensor of dimension `(batch_size, M)`, where M is the dimension of the latent space.
         """
         logits = self.decoder_net(z)
+        unique, count = torch.unique(batch, return_counts=True)
+
+        # make logits mask for each graph based on unique and count. where unique is which graph and count is how many nodes in each graph
+        mask = torch.zeros(len(unique), 28, 28)
+        for u in unique:
+            mask[u, :count[u], :count[u]] = 1
+
+        logits = logits * mask
         # Set upper triangular part of the logits to 0
-        logits = torch.tril(logits, diagonal=-1)
+        with torch.no_grad():
+            logits = torch.tril(logits, diagonal=-1)    
         
         return td.Independent(td.Bernoulli(logits=logits), 2)
     
@@ -212,12 +221,26 @@ class VAE(nn.Module):
         q = self.encoder(x, edge_index, batch)  # returns: distribution of shape [batch=100, latent_dim=1]
         z = q.rsample() # dim: batch, latent_dim:  100, 1
 
-        A = to_dense_adj(edge_index, batch)
-        X, idx = to_dense_batch(x, batch)
+        A = to_dense_adj(edge_index, batch) # dim: 100, 28, 28
 
-        A = torch.tril(A, diagonal=-1)
-        log_prob = self.decoder(z).log_prob(A) # self.decoder(z) "Independent(Bernoulli(logits: torch.Size([100, 28, 28])), 2)""
+        # permute a 100 times but only inside the mask
+        # create 0 matrix of shape 5, 100,28,28
+        A_perm = torch.zeros(5, len(A), 28, 28)
+        unique, count = torch.unique(batch, return_counts=True)
+        for i in range(len(A)):
+            for j in range(len(A_perm)):
+                perm = torch.randperm(count[i])
+                A_perm[j,i,:count[i], :count[i]] = A[i, perm,:][:,perm]
 
+        
+
+        A_perm = torch.tril(A_perm, diagonal=-1) # dim: 5, 100, 28, 28
+        x_star = self.decoder(z, batch)
+
+        log_prob = self.decoder(z, batch).log_prob(A_perm) # 5, 100
+        log_prob = torch.max(log_prob,axis=0)[0]
+
+    
         # kl divergence estimation
         kl = td.kl_divergence(q, self.prior()).sum(-1)
 
@@ -274,18 +297,17 @@ def train(model, criterion, optimizer, scheduler, train_loader, epochs, device):
     """
     # Fit the model
     # Number of epochs
-    epochs = 1000
-    train_accuracies = []
+
     train_losses = []
-    validation_accuracies = []
+
     validation_losses = []
 
 
     model.train()
-    for epoch in range(epochs):
+    tqdm_range = tqdm(range(epochs))
+    for epoch in tqdm_range:
         # Loop over training batches
         
-        train_accuracy = 0.
         train_loss = 0.
         for data in train_loader:
             out = model(data.x, data.edge_index, batch=data.batch)
@@ -297,11 +319,12 @@ def train(model, criterion, optimizer, scheduler, train_loader, epochs, device):
             optimizer.step()
 
             # Compute training loss and accuracy
-            train_accuracy += sum((out>0) == data.y).detach().cpu() / len(train_loader.dataset)
             train_loss += loss.detach().cpu().item() * data.batch_size / len(train_loader.dataset)
 
         
         scheduler.step()
+        tqdm_range.set_postfix({'train_loss': train_loss})
+
 
         # Validation, print and plots
         with torch.no_grad():    
@@ -312,13 +335,13 @@ def train(model, criterion, optimizer, scheduler, train_loader, epochs, device):
             for data in validation_loader:
                 out = model(data.x, data.edge_index, data.batch)
                 validation_accuracy += sum((out>0) == data.y).cpu() / len(validation_loader.dataset)
-                validation_loss += 100#cross_entropy(out, data.y.float()).cpu().item() * data.batch_size / len(validation_loader.dataset)
+                validation_loss += out#cross_entropy(out, data.y.float()).cpu().item() * data.batch_size / len(validation_loader.dataset)
 
             # Store the training and validation accuracy and loss for plotting
-            train_accuracies.append(train_accuracy)
+
             train_losses.append(train_loss)
             validation_losses.append(validation_loss)
-            validation_accuracies.append(validation_accuracy)
+
         
         model.train()
 
@@ -335,9 +358,8 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
-    parser.add_argument('--batch-size', type=int, default=32, metavar='N', help='batch size for training (default: %(default)s)')
-    parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: %(default)s)')
-    parser.add_argument('--latent-dim', type=int, default=1, metavar='N', help='dimension of latent variable (default: %(default)s)')
+    parser.add_argument('--epochs', type=int, default=3000, metavar='N', help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--latent-dim', type=int, default=5, metavar='N', help='dimension of latent variable (default: %(default)s)')
 
     args = parser.parse_args()
     print('# Options')
@@ -378,7 +400,7 @@ if __name__ == "__main__":
     decoder = BernoulliDecoder(decoder_net)
     
     # Define VAE model
-    encoder = GaussianEncoder(node_feature_dim, state_dim, num_message_passing_rounds)
+    encoder = GaussianEncoder(node_feature_dim, state_dim, num_message_passing_rounds, M)
     model = VAE(prior, decoder, encoder).to(device)
 
     # Choose mode to run
@@ -386,9 +408,9 @@ if __name__ == "__main__":
         # Loss function
         criterion = torch.nn.BCEWithLogitsLoss()
         # Optimizer
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         # Learning rate scheduler
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.995)
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=1)#0.995)
 
         # Train model
         train(model, criterion, optimizer, scheduler, train_loader, args.epochs, device)
