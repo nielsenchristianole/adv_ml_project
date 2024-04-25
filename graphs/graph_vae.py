@@ -207,7 +207,7 @@ class BernoulliDecoder(nn.Module):
         super(BernoulliDecoder, self).__init__()
         self.decoder_net = decoder_net
 
-    def forward(self, z, batch):
+    def forward(self, z, batch=None, *, batch_size: int=1, sizes: torch.IntTensor=None):
         """
         Given a batch of latent variables, return a Bernoulli distribution over the data space.
 
@@ -216,7 +216,18 @@ class BernoulliDecoder(nn.Module):
            A tensor of dimension `(batch_size, M)`, where M is the dimension of the latent space.
         """
         logits = self.decoder_net(z)
-        unique, count = torch.unique(batch, return_counts=True)
+        if batch is not None:
+            # sample using the batch information (for training I guess)
+            unique, count = torch.unique(batch, return_counts=True)
+        elif sizes is not None:
+            # sample using the given sizes
+            unique = torch.arange(len(sizes))
+            count = sizes
+        else:
+            # random sampling
+            unique = torch.arange(batch_size)
+            global SAMPLES_GRAPH_SIZE_FROM_DATA
+            count = torch.from_numpy(SAMPLES_GRAPH_SIZE_FROM_DATA(batch_size))
 
         # make logits mask for each graph based on unique and count. where unique is which graph and count is how many nodes in each graph
         mask = torch.zeros(len(unique), 28, 28)
@@ -291,7 +302,7 @@ class VAE(nn.Module):
 
         return torch.mean(log_prob - kl, dim=0)
 
-    def sample(self, n_samples=1):
+    def sample(self, n_samples=1, *, sizes: torch.IntTensor=None):
         """
         Sample from the model.
         
@@ -300,7 +311,7 @@ class VAE(nn.Module):
            Number of samples to generate.
         """
         z = self.prior().sample(torch.Size([n_samples]))
-        return self.decoder(z).sample()
+        return self.decoder(z, batch_size=n_samples, sizes=sizes).sample()
     
     def mean_sample(self, n_samples=1):
         """
@@ -401,7 +412,7 @@ if __name__ == "__main__":
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--encoder', type=str, default='mm', choices=['mm','conv'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus'], help='Prior distribution (default: %(default)s)')
-    parser.add_argument('--model', type=str, default='model.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser.add_argument('--model', type=str, default='assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=3000, metavar='N', help='number of epochs to train (default: %(default)s)')
@@ -481,4 +492,39 @@ if __name__ == "__main__":
 
         # Generate samples
         model.eval()
-        pass
+
+        from eval import get_dataset_adjacency_matrix, evaluate, plot_node_degree_histogram, plot_clustering_coefficient_histogram, plot_eigenvector_centrality
+        from erdos_baseline import erdos_model
+
+        MUTAG_adjcs = get_dataset_adjacency_matrix()
+
+        # this is a function for sampling the number of nodes in a graph
+        global SAMPLES_GRAPH_SIZE_FROM_DATA
+        size, count = np.unique((MUTAG_adjcs.sum(axis=1) >= 1).sum(axis=1), return_counts=True)
+        SAMPLES_GRAPH_SIZE_FROM_DATA = lambda num_samples: np.random.choice(size, p=count/count.sum(), size=num_samples)
+
+        gnn_adjs = model.sample(1000).cpu().numpy().astype(bool)
+
+        erdos = erdos_model.generate(1000)
+        ERDOS_adjcs = np.stack([
+            np.pad(arr := er.todense(), ((0, 28-len(arr)), (0, 28-len(arr)))).astype(bool)
+            for er in erdos
+        ])
+
+        for A in (MUTAG_adjcs, gnn_adjs, ERDOS_adjcs):
+            print(evaluate(A))
+        
+        named_data = (
+            ('MUTAG', MUTAG_adjcs),
+            ('GNN', gnn_adjs),
+            ('ERDOS', ERDOS_adjcs)
+        )
+
+        fig, axs = plt.subplots(1, 3, figsize=(12, 4))
+        for i, fn in enumerate((plot_node_degree_histogram, plot_clustering_coefficient_histogram, plot_eigenvector_centrality)):
+            fn(*named_data, ax=axs[i], mean_over_graph=False, alpha=0.5)
+        fig.tight_layout()
+        fig.savefig('assets/results_plot.pdf', bbox_inches='tight')
+        plt.show()
+
+
