@@ -96,7 +96,7 @@ def plot_node_degree_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.A
         ax.legend()
         ax.set_xlabel('Node degree')
         ax.set_ylabel('Frequency')
-        ax.set_title(f'Node degree{"" if mean_over_graph else "*"}')
+        ax.set_title(f'Node degree{"*" if mean_over_graph else ""}')
 
     return ax
 
@@ -125,7 +125,7 @@ def plot_clustering_coefficient_histogram(*data: tuple[str, np.ndarray], ax: Opt
         ax.legend()
         ax.set_xlabel('Clustering coefficient')
         ax.set_ylabel('Frequency')
-        ax.set_title(f'Clustering coefficient{"" if mean_over_graph else "*"}')
+        ax.set_title(f'Clustering coefficient{"*" if mean_over_graph else ""}')
 
     return ax
 
@@ -164,7 +164,7 @@ def plot_eigenvector_centrality(*data: tuple[str, np.ndarray], ax: Optional[plt.
         ax.legend()
         ax.set_xlabel('Eigenvector centrality')
         ax.set_ylabel('Frequency')
-        ax.set_title(f'Eigenvector centrality{"" if mean_over_graph else "*"}')
+        ax.set_title(f'Eigenvector centrality{"*" if mean_over_graph else ""}')
 
     return ax
 
