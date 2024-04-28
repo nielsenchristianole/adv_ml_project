@@ -367,9 +367,6 @@ def train(model, criterion, optimizer, train_loader, epochs, device):
 
     train_losses = []
 
-    validation_losses = []
-
-
     model.train()
     tqdm_range = tqdm(range(epochs))
     for epoch in tqdm_range:
@@ -388,26 +385,9 @@ def train(model, criterion, optimizer, train_loader, epochs, device):
             train_loss += loss.detach().cpu().item() * data.batch_size / len(train_loader.dataset)
 
         tqdm_range.set_postfix({'train_loss': train_loss})
+        train_losses.append(train_loss)
+    return train_losses
 
-
-        # Validation, print and plots
-        with torch.no_grad():    
-            model.eval()
-            # Compute validation loss and accuracy
-            validation_loss = 0.
-            validation_accuracy = 0.
-            for data in validation_loader:
-                out = model(data.x, data.edge_index, data.batch)
-                validation_accuracy += sum((out>0) == data.y).cpu() / len(validation_loader.dataset)
-                validation_loss += out#cross_entropy(out, data.y.float()).cpu().item() * data.batch_size / len(validation_loader.dataset)
-
-            # Store the training and validation accuracy and loss for plotting
-
-            train_losses.append(train_loss)
-            validation_losses.append(validation_loss)
-
-        
-        model.train()
 
 if __name__ == "__main__":
     # Parse arguments
@@ -438,14 +418,7 @@ if __name__ == "__main__":
     dataset = TUDataset(root='./data/', name='MUTAG').to(device)
     node_feature_dim = 7
 
-    # Split into training and validation
-    rng = torch.Generator().manual_seed(0)
-    train_dataset, validation_dataset, test_dataset = random_split(dataset, (100, 44, 44), generator=rng)
-
-    # Create dataloader for training and validation
-    train_loader = DataLoader(train_dataset, batch_size=100)
-    validation_loader = DataLoader(validation_dataset, batch_size=44)
-    test_loader = DataLoader(test_dataset, batch_size=44)
+    dataloader = DataLoader(dataset, batch_size=188)
 
     # Instantiate the model
     state_dim = 8
@@ -458,7 +431,9 @@ if __name__ == "__main__":
     decoder_net = nn.Sequential(
         nn.Linear(M, 10),
         nn.ReLU(),
-        nn.Linear(10, 784),
+        nn.Linear(10, 100),
+        nn.ReLU(),
+        nn.Linear(100, 784),
         nn.Unflatten(-1, (28, 28))
     )
 
@@ -479,7 +454,7 @@ if __name__ == "__main__":
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
         # Train model
-        train(model, criterion, optimizer, train_loader, args.epochs, device)
+        train(model, criterion, optimizer, dataloader, args.epochs, device)
 
         # Save model
         torch.save(model.state_dict(), args.model)
@@ -499,6 +474,13 @@ if __name__ == "__main__":
         # Generate samples
         model.eval()
 
+
+        for data in dataloader:
+            out = model.encoder(data.x, data.edge_index, data.batch)
+        plt.scatter(*out.mean.detach().cpu().numpy().T)
+        plt.show()
+
+
         from erdos_baseline import erdos_model
         from eval import (
             evaluate,
@@ -515,17 +497,17 @@ if __name__ == "__main__":
         size, count = np.unique((MUTAG_adjcs.sum(axis=1) >= 1).sum(axis=1), return_counts=True)
         SAMPLES_GRAPH_SIZE_FROM_DATA = lambda num_samples: np.random.choice(size, p=count/count.sum(), size=num_samples)
 
-        gnn_adjs = model.sample(1000, return_mean=True).detach().cpu().numpy().astype(bool)
+        gnn_adjs = model.sample(1000, return_mean=False).detach().cpu().numpy().astype(bool)
 
-        results = list()
-        for t in tqdm(np.linspace(0, 1, 10)):
-            A = (gnn_adjs > t)
-            results.append(evaluate(A))
-        import matplotlib.pyplot as plt
-        results = np.array(results).T
-        for a in results:
-            plt.plot(a)
-        plt.show()
+        # results = list()
+        # for t in tqdm(np.linspace(0, 1, 10)):
+        #     A = (gnn_adjs > t)
+        #     results.append(evaluate(A))
+        # import matplotlib.pyplot as plt
+        # results = np.array(results).T
+        # for a in results:
+        #     plt.plot(a)
+        # plt.show()
 
         erdos = erdos_model.generate(1000)
         ERDOS_adjcs = np.stack([

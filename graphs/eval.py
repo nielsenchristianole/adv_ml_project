@@ -64,7 +64,7 @@ def evaluate(new_adjacency_matrix: np.ndarray) -> tuple[float, float, float]:
 
     _novel = np.mean([h not in MUTAG_set for h in new_hashes])
     _unique = len(new_set) / len(new_hashes)
-    _novel_unique = len(new_set - MUTAG_set) / len(new_set)
+    _novel_unique = len(new_set - MUTAG_set) / len(new_hashes)
 
     return (
         _novel,
