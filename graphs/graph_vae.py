@@ -42,11 +42,17 @@ class GaussianPrior(nn.Module):
         return td.Independent(td.Normal(loc=self.mean, scale=self.std), 1)
 
 class GaussianEncoderMessagePassing(nn.Module):
-    def __init__(self, node_feature_dim, state_dim, num_message_passing_rounds, M):
+    def __init__(self, node_feature_dim, state_dim, num_message_passing_rounds, M, dropout: float=0.1):
         """
         Define a Gaussian encoder distribution based on a given encoder network.
 
         Parameters:
+        -----------
+            * node_feature_dim: the dimension of the node features
+            * state_dim: dimensionality of the states
+            * num_message_passing_rounds: you guessed it
+            * M: encoding_dim (of the graph)
+
         encoder_net: [torch.nn.Module]             
            The encoder network that takes as a tensor of dim `(batch_size,
            feature_dim1, feature_dim2)` and output a tensor of dimension
@@ -62,7 +68,7 @@ class GaussianEncoderMessagePassing(nn.Module):
         # Input network
         self.input_net = torch.nn.Sequential(
             torch.nn.Linear(self.node_feature_dim, self.state_dim),
-            torch.nn.Dropout(0.1),
+            torch.nn.Dropout(dropout),
             torch.nn.ReLU()
             )
 
@@ -70,7 +76,7 @@ class GaussianEncoderMessagePassing(nn.Module):
         self.message_net = torch.nn.ModuleList([
             torch.nn.Sequential(
                 torch.nn.Linear(self.state_dim, self.state_dim),
-                torch.nn.Dropout(0.1),
+                torch.nn.Dropout(dropout),
                 torch.nn.ReLU()
             ) for _ in range(num_message_passing_rounds)])
 
@@ -78,7 +84,7 @@ class GaussianEncoderMessagePassing(nn.Module):
         self.update_net = torch.nn.ModuleList([
             torch.nn.Sequential(
                 torch.nn.Linear(self.state_dim, self.state_dim),
-                torch.nn.Dropout(0.1),
+                torch.nn.Dropout(dropout),
                 torch.nn.ReLU(),
             ) for _ in range(num_message_passing_rounds)])
         
@@ -199,10 +205,6 @@ class BernoulliDecoder(nn.Module):
         Define a Bernoulli decoder distribution based on a given decoder network.
 
         Parameters: 
-        encoder_net: [torch.nn.Module]             
-           The decoder network that takes as a tensor of dim `(batch_size, M) as
-           input, where M is the dimension of the latent space, and outputs a
-           tensor of dimension (batch_size, feature_dim1, feature_dim2).
         """
         super(BernoulliDecoder, self).__init__()
         self.decoder_net = decoder_net
@@ -230,14 +232,15 @@ class BernoulliDecoder(nn.Module):
             count = torch.from_numpy(SAMPLES_GRAPH_SIZE_FROM_DATA(batch_size))
 
         # make logits mask for each graph based on unique and count. where unique is which graph and count is how many nodes in each graph
-        mask = torch.zeros(len(unique), 28, 28)
+        # NOTE: count is mabe a wierd name - it denotes the sizes of the graphs, i.e. the 'count' of nodes in each graph.
+        mask = torch.zeros(len(unique), 28, 28, dtype=torch.bool)
         for u in unique:
             mask[u, :count[u], :count[u]] = 1
 
-        logits = logits * mask
+        logits = torch.where(mask, logits, torch.zeros_like(logits))
         # Set upper triangular part of the logits to 0
-        with torch.no_grad():
-            logits = torch.tril(logits, diagonal=-1)    
+        # with torch.no_grad():
+        #     logits = torch.tril(logits, diagonal=-1)    
         
         return td.Independent(td.Bernoulli(logits=logits), 2)
     
@@ -280,20 +283,20 @@ class VAE(nn.Module):
 
         A = to_dense_adj(edge_index, batch) # dim: 100, 28, 28
 
-        # permute a 100 times but only inside the mask
+        # permute A 100 times but only inside the mask
         # create 0 matrix of shape 5, 100,28,28
-        A_perm = torch.zeros(5, len(A), 28, 28)
-        unique, count = torch.unique(batch, return_counts=True)
-        for i in range(len(A)):
-            for j in range(len(A_perm)):
-                perm = torch.randperm(count[i])
-                A_perm[j,i,:count[i], :count[i]] = A[i, perm,:][:,perm]
+        # A_perm = torch.zeros(5, len(A), 28, 28)
+        # unique, count = torch.unique(batch, return_counts=True)
+        # for i in range(len(A)):
+        #     for j in range(len(A_perm)):
+        #         perm = torch.randperm(count[i])
+        #         A_perm[j,i,:count[i], :count[i]] = A[i, perm,:][:,perm]
 
         
 
-        A_perm = torch.tril(A_perm, diagonal=-1) # dim: 5, 100, 28, 28
+        # A_perm = torch.tril(A_perm, diagonal=-1) # dim: 5, 100, 28, 28
 
-        log_prob = self.decoder(z, batch).log_prob(A_perm) # 5, 100
+        log_prob = self.decoder(z, batch).log_prob(A) # 5, 100
         log_prob = torch.max(log_prob,axis=0)[0]
 
     
@@ -311,7 +314,13 @@ class VAE(nn.Module):
            Number of samples to generate.
         """
         z = self.prior().sample(torch.Size([n_samples]))
-        sample = self.decoder(z, batch_size=n_samples, sizes=sizes).sample()
+        dist: td.Distribution = self.decoder(z, batch_size=n_samples, sizes=sizes)
+
+        # import matplotlib.pyplot as plt
+        # plt.ecdf(dist.mean.flatten().tolist())
+        # plt.scatter(z[:,0], z[:,1])
+
+        sample = dist.sample()
         return torch.tril(sample, diagonal=-1)    
 
     
@@ -368,8 +377,7 @@ def train(model, criterion, optimizer, scheduler, train_loader, epochs, device):
         
         train_loss = 0.
         for data in train_loader:
-            out = model(data.x, data.edge_index, batch=data.batch)
-            loss = out#cross_entropy(out, data.y.float())
+            loss = model(data.x, data.edge_index, batch=data.batch)
 
             # Gradient step
             optimizer.zero_grad()
@@ -411,14 +419,14 @@ if __name__ == "__main__":
     from torchvision import datasets, transforms
     from torchvision.utils import make_grid, save_image
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='sample', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--mode', type=str, default='eval', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--encoder', type=str, default='mm', choices=['mm','conv'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--model', type=str, default='graphs/model_mm.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
-    parser.add_argument('--epochs', type=int, default=3000, metavar='N', help='number of epochs to train (default: %(default)s)')
-    parser.add_argument('--latent-dim', type=int, default=5, metavar='N', help='dimension of latent variable (default: %(default)s)')
+    parser.add_argument('--epochs', type=int, default=9000, metavar='N', help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--latent-dim', type=int, default=2, metavar='N', help='dimension of latent variable (default: %(default)s)')
 
     args = parser.parse_args()
     print('# Options')
@@ -462,7 +470,7 @@ if __name__ == "__main__":
     if args.encoder == 'conv':
         encoder = GaussianEncoderConvolution(node_feature_dim, 5, M)
     else:
-        encoder = GaussianEncoderMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M)
+        encoder = GaussianEncoderMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M, dropout=0.)
     model = VAE(prior, decoder, encoder).to(device)
 
     # Choose mode to run
@@ -489,7 +497,7 @@ if __name__ == "__main__":
             samples = (model.sample(64)).cpu() 
             save_image(samples.view(64, 1, 28, 28), args.samples)
     
-    elif args.mode == 'eval':
+    if (args.mode == 'eval') or (args.mode == 'train'):
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
 
         # Generate samples
