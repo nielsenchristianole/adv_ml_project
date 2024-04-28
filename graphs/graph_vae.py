@@ -233,11 +233,11 @@ class BernoulliDecoder(nn.Module):
 
         # make logits mask for each graph based on unique and count. where unique is which graph and count is how many nodes in each graph
         # NOTE: count is mabe a wierd name - it denotes the sizes of the graphs, i.e. the 'count' of nodes in each graph.
-        mask = torch.zeros(len(unique), 28, 28, dtype=torch.bool)
-        for u in unique:
-            mask[u, :count[u], :count[u]] = 1
+        # mask = torch.zeros(len(unique), 28, 28, dtype=torch.bool)
+        # for u in unique:
+        #     mask[u, :count[u], :count[u]] = 1
 
-        logits = torch.where(mask, logits, torch.zeros_like(logits))
+        # logits = torch.where(mask, logits, torch.zeros_like(logits))
         # Set upper triangular part of the logits to 0
         # with torch.no_grad():
         #     logits = torch.tril(logits, diagonal=-1)    
@@ -292,8 +292,6 @@ class VAE(nn.Module):
         #         perm = torch.randperm(count[i])
         #         A_perm[j,i,:count[i], :count[i]] = A[i, perm,:][:,perm]
 
-        
-
         # A_perm = torch.tril(A_perm, diagonal=-1) # dim: 5, 100, 28, 28
 
         log_prob = self.decoder(z, batch).log_prob(A) # 5, 100
@@ -305,7 +303,7 @@ class VAE(nn.Module):
 
         return torch.mean(log_prob - kl, dim=0)
 
-    def sample(self, n_samples=1, *, sizes: torch.IntTensor=None):
+    def sample(self, n_samples=1, *, sizes: torch.IntTensor=None, return_mean: bool=False):
         """
         Sample from the model.
         
@@ -316,13 +314,15 @@ class VAE(nn.Module):
         z = self.prior().sample(torch.Size([n_samples]))
         dist: td.Distribution = self.decoder(z, batch_size=n_samples, sizes=sizes)
 
+        if return_mean:
+            return dist.mean
+
         # import matplotlib.pyplot as plt
         # plt.ecdf(dist.mean.flatten().tolist())
         # plt.scatter(z[:,0], z[:,1])
 
         sample = dist.sample()
-        return torch.tril(sample, diagonal=-1)    
-
+        return sample
     
     def mean_sample(self, n_samples=1):
         """
@@ -346,7 +346,7 @@ class VAE(nn.Module):
         return -self.elbo( x, edge_index, batch)
 
 
-def train(model, criterion, optimizer, scheduler, train_loader, epochs, device):
+def train(model, criterion, optimizer, train_loader, epochs, device):
     """
     Train a VAE model.
 
@@ -387,8 +387,6 @@ def train(model, criterion, optimizer, scheduler, train_loader, epochs, device):
             # Compute training loss and accuracy
             train_loss += loss.detach().cpu().item() * data.batch_size / len(train_loader.dataset)
 
-        
-        scheduler.step()
         tqdm_range.set_postfix({'train_loss': train_loss})
 
 
@@ -425,7 +423,7 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str, default='graphs/model_mm.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
-    parser.add_argument('--epochs', type=int, default=9000, metavar='N', help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--epochs', type=int, default=1000, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=2, metavar='N', help='dimension of latent variable (default: %(default)s)')
 
     args = parser.parse_args()
@@ -479,11 +477,9 @@ if __name__ == "__main__":
         criterion = torch.nn.BCEWithLogitsLoss()
         # Optimizer
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-        # Learning rate scheduler
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=1)#0.995)
 
         # Train model
-        train(model, criterion, optimizer, scheduler, train_loader, args.epochs, device)
+        train(model, criterion, optimizer, train_loader, args.epochs, device)
 
         # Save model
         torch.save(model.state_dict(), args.model)
@@ -519,13 +515,25 @@ if __name__ == "__main__":
         size, count = np.unique((MUTAG_adjcs.sum(axis=1) >= 1).sum(axis=1), return_counts=True)
         SAMPLES_GRAPH_SIZE_FROM_DATA = lambda num_samples: np.random.choice(size, p=count/count.sum(), size=num_samples)
 
-        gnn_adjs = model.sample(1000).cpu().numpy().astype(bool)
+        gnn_adjs = model.sample(1000, return_mean=True).detach().cpu().numpy().astype(bool)
+
+        results = list()
+        for t in tqdm(np.linspace(0, 1, 10)):
+            A = (gnn_adjs > t)
+            results.append(evaluate(A))
+        import matplotlib.pyplot as plt
+        results = np.array(results).T
+        for a in results:
+            plt.plot(a)
+        plt.show()
 
         erdos = erdos_model.generate(1000)
         ERDOS_adjcs = np.stack([
             np.pad(arr := er.todense(), ((0, 28-len(arr)), (0, 28-len(arr)))).astype(bool)
             for er in erdos
         ])
+
+        print('novel, unique, novel+unique')
 
         for A in (MUTAG_adjcs, gnn_adjs, ERDOS_adjcs):
             print(evaluate(A))
