@@ -147,16 +147,16 @@ class BernoulliNodeDecoder(nn.Module):
         self.decoder_net = decoder_net
         self.bias = torch.nn.Parameter(torch.tensor([0.]))
 
-    def forward(self, z, rx, tx):
+    def forward(self, rx, tx):
         """
         Returns the probability of a links between nodes in lists rx and tx
         based on: return torch.sigmoid((self.embedding.weight[rx]*self.embedding.weight[tx]).sum(1) + self.bias)
         """
         #logits = self.decoder_net(z)
         
-        logits= torch.sigmoid((z[rx]*z[tx]).sum(1) + self.bias)
+        logits= torch.sigmoid((rx*tx).sum(1) + self.bias)
         
-        return td.Independent(td.Bernoulli(logits=logits), 1)
+        return [td.Bernoulli(logits=logit) for logit in logits]
     
 class VAENode(nn.Module):
     """
@@ -190,26 +190,41 @@ class VAENode(nn.Module):
         # elbo = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0) # dim: 64
         
         qs = self.encoder(x, edge_index, batch)  # returns: distribution of all latent variables for all nodes
+        nodes_numbers = torch.arange(len(x))
 
         # Compute the ELBO for each graph.
         log_probs = torch.zeros(len(torch.unique(batch)))
         kls = torch.zeros(len(torch.unique(batch)))
-        for b in torch.unique(batch):
-            
-            edge_index_graph = edge_index[0, :]
+        for b in torch.unique(batch):  
             x_graph = x[batch == b]
-            qs_graph = qs[batch == b]
+            #qs_graph = qs[batch == b] ! not possible for list
+            # get indices where batch == b is true
+            qs_idx = torch.where(batch == b)[0]
 
-            z = [q.rsample() for q in qs_graph] # sampled latent variables for all nodes
+            # get all nodes in batch b
+            b_nodes = nodes_numbers[batch==b] # tensor([ 0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10, 11, 12, 13, 14, 15, 16])
 
+            # get all edge_index in batch b
+            b_edge_index = edge_index[:, torch.logical_or(torch.isin(edge_index[0], b_nodes), torch.isin(edge_index[1], b_nodes))]
+
+            # Calculate elbo for each node in b
+            
             # Compute the log probability between all pairs of nodes
             pairs = torch.combinations(torch.arange(x_graph.size(0)))
-            link_probability = self.decoder(z, pairs[:, 0], pairs[:, 1])
-            log_prob = link_probability.log_prob(edge_index_graph)
-            kl = torch.mean([td.kl_divergence(q, self.prior()) for q in qs_graph])
+            targets = torch.zeros(len(pairs))
+            # set target to 1 if edge exists
+            for rx, tx in b_edge_index.T:
+                targets[(pairs[:, 0] == rx) & (pairs[:, 1] == tx)] = 1
+                
+            z = torch.stack([qs[idx].rsample() for idx in qs_idx])
 
-            log_probs[b] = torch.mean(log_prob)
-            kls[b] = kl
+            link_probabilitys = self.decoder(z[pairs[:, 0]], z[pairs[:, 1]])
+            log_prob_list = torch.stack([link_probabilitys[i].log_prob(targets[i])  for i in range(len(link_probabilitys))])
+            
+            kl = torch.stack([td.kl_divergence(qs[idx], self.prior()) for idx in qs_idx])
+
+            log_probs[b] = torch.mean(log_prob_list)
+            kls[b] = torch.mean(kl)
 
         return torch.mean(log_probs - kls, dim=0)
 

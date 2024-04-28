@@ -402,8 +402,8 @@ if __name__ == "__main__":
     from torchvision import datasets, transforms
     from torchvision.utils import make_grid, save_image
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='eval', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--encoder', type=str, default='mm', choices=['mm','conv','mp_node'], help='Prior distribution (default: %(default)s)')
+    parser.add_argument('--mode', type=str, default='train', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--encoder', type=str, default='mp_node', choices=['mm','conv','mp_node'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--model', type=str, default='graphs/model_mm.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
