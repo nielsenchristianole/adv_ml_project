@@ -516,15 +516,16 @@ if __name__ == "__main__":
         ])
 
         print('novel, unique, novel+unique')
-
-        for A in (MUTAG_adjcs, gnn_adjs, ERDOS_adjcs):
-            print(evaluate(A))
         
         named_data = (
             ('MUTAG', MUTAG_adjcs),
+            ('ERDOS', ERDOS_adjcs),
             ('GNN', gnn_adjs),
-            ('ERDOS', ERDOS_adjcs)
         )
+
+        for t, A in named_data:
+            print(t)
+            print(evaluate(A))
 
         fig, axs = plt.subplots(1, 3, figsize=(12, 4))
         for i, fn in enumerate((plot_node_degree_histogram, plot_clustering_coefficient_histogram, plot_eigenvector_centrality)):
