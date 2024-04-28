@@ -7,6 +7,11 @@ import torch
 import torch.distributions as td
 import torch.nn as nn
 import torch.utils.data
+from graph_vae_node import (
+    BernoulliNodeDecoder,
+    GaussianEncoderNodeMessagePassing,
+    VAENode,
+)
 from scipy import stats
 from scipy.stats import kde
 from sklearn.decomposition import PCA
@@ -398,7 +403,7 @@ if __name__ == "__main__":
     from torchvision.utils import make_grid, save_image
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, default='eval', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--encoder', type=str, default='mm', choices=['mm','conv'], help='Prior distribution (default: %(default)s)')
+    parser.add_argument('--encoder', type=str, default='mm', choices=['mm','conv','mp_node'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--model', type=str, default='graphs/model_mm.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
@@ -437,14 +442,23 @@ if __name__ == "__main__":
         nn.Unflatten(-1, (28, 28))
     )
 
-    decoder = BernoulliDecoder(decoder_net)
+    if args.encoder == 'mp_node':
+        decoder = BernoulliNodeDecoder(decoder_net)
+    else:
+        decoder = BernoulliDecoder(decoder_net)
+    
     
     # Define VAE model
     if args.encoder == 'conv':
         encoder = GaussianEncoderConvolution(node_feature_dim, 5, M)
+    elif args.encoder == 'mp_node':
+        encoder = GaussianEncoderNodeMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M)
     else:
         encoder = GaussianEncoderMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M, dropout=0.)
-    model = VAE(prior, decoder, encoder).to(device)
+    if args.encoder == 'mp_node':
+        model = VAENode(prior, decoder, encoder).to(device)
+    else:
+        model = VAE(prior, decoder, encoder).to(device)
 
     # Choose mode to run
     if args.mode == 'train':
