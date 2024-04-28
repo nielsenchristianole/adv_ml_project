@@ -108,8 +108,8 @@ class GaussianEncoderMessagePassing(nn.Module):
         num_nodes = batch.shape[0]
 
         # Initialize node state from node features
-        state = self.input_net(x)
-        #state = x.new_zeros([num_nodes, self.state_dim]) # Uncomment to disable the use of node features
+        #state = self.input_net(x)
+        state = x.new_zeros([num_nodes, self.state_dim]) # Uncomment to disable the use of node features
 
         # Loop over message passing rounds
         for r in range(self.num_message_passing_rounds):
@@ -311,7 +311,9 @@ class VAE(nn.Module):
            Number of samples to generate.
         """
         z = self.prior().sample(torch.Size([n_samples]))
-        return self.decoder(z, batch_size=n_samples, sizes=sizes).sample()
+        sample = self.decoder(z, batch_size=n_samples, sizes=sizes).sample()
+        return torch.tril(sample, diagonal=-1)    
+
     
     def mean_sample(self, n_samples=1):
         """
@@ -409,10 +411,10 @@ if __name__ == "__main__":
     from torchvision import datasets, transforms
     from torchvision.utils import make_grid, save_image
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='train', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--mode', type=str, default='sample', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--encoder', type=str, default='mm', choices=['mm','conv'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus'], help='Prior distribution (default: %(default)s)')
-    parser.add_argument('--model', type=str, default='assets/model.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser.add_argument('--model', type=str, default='graphs/model_mm.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=3000, metavar='N', help='number of epochs to train (default: %(default)s)')
@@ -480,7 +482,7 @@ if __name__ == "__main__":
 
     elif args.mode == 'sample':
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
-
+        
         # Generate samples
         model.eval()
         with torch.no_grad():
@@ -493,8 +495,14 @@ if __name__ == "__main__":
         # Generate samples
         model.eval()
 
-        from eval import get_dataset_adjacency_matrix, evaluate, plot_node_degree_histogram, plot_clustering_coefficient_histogram, plot_eigenvector_centrality
         from erdos_baseline import erdos_model
+        from eval import (
+            evaluate,
+            get_dataset_adjacency_matrix,
+            plot_clustering_coefficient_histogram,
+            plot_eigenvector_centrality,
+            plot_node_degree_histogram,
+        )
 
         MUTAG_adjcs = get_dataset_adjacency_matrix()
 
