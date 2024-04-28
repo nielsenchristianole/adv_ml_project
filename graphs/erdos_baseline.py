@@ -41,17 +41,22 @@ class ErdosRModel:
 
         self.graph_size_prob, self.graph_link_prob = init_probs(dataset)
 
-    def generate(self, batch_size=1, adj_matrix=True):
+    def generate(self, batch_size=1, adj_matrix=True, return_nx_graphs=False):
         graphs = []
+        nx_graphs = []
         ns = random.choices(list(self.graph_size_prob.keys()), weights=self.graph_size_prob.values(), k=batch_size)
 
         for n in ns:
             # num_edges = np.random.binomial(n=n**2, p=self.graph_link_prob[n])
             graph = nx.binomial_graph(n=n, p=self.graph_link_prob[n])
+            nx_graphs.append(graph)
             # graphs.append(graph.adj)
             graphs.append(nx.adjacency_matrix(graph))
 
-        return graphs
+        if return_nx_graphs:
+            return graphs, nx_graphs
+        else:
+            return graphs
 
 # %%
 
