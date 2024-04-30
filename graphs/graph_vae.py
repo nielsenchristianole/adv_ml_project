@@ -319,7 +319,7 @@ class VAE(nn.Module):
 
         return (log_prob - kl).mean()
 
-    def sample(self, n_samples=None, return_mean: bool=False, graph_sizes=None, z=None):
+    def sample(self, n_samples=None, return_mean: bool=False, graph_sizes=None, z=None, mask=True):
         """
         Sample from the model.
         
@@ -342,9 +342,11 @@ class VAE(nn.Module):
             sample = posterior.sample()
 
         sample = sample + sample.transpose(1, 2)
-        for i,N in enumerate(graph_sizes):
-            sample[i, N:] = 0
-            sample[i, :, N:] = 0
+
+        if mask:
+            for i,N in enumerate(graph_sizes):
+                sample[i, N:] = 0
+                sample[i, :, N:] = 0
         return sample, graph_sizes
     
     def mean_sample(self, n_samples=1):
@@ -421,9 +423,9 @@ if __name__ == "__main__":
     from torchvision.utils import make_grid, save_image
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, default='eval', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--encoder', type=str, default='mm', choices=['mm','conv'], help='Prior distribution (default: %(default)s)')
+    parser.add_argument('--encoder', type=str, default='conv', choices=['mm','conv'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus'], help='Prior distribution (default: %(default)s)')
-    parser.add_argument('--model', type=str, default='graphs/model_mm.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser.add_argument('--model', type=str, default='graphs/model_conv.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=1000, metavar='N', help='number of epochs to train (default: %(default)s)')
@@ -467,7 +469,7 @@ if __name__ == "__main__":
     if args.encoder == 'conv':
         encoder = GaussianEncoderConvolution(node_feature_dim, 5, M)
     else:
-        encoder = GaussianEncoderMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M, dropout=0.1)
+        encoder = GaussianEncoderMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M, dropout=0.03)
     model = VAE(prior, decoder, encoder).to(device)
 
     # Choose mode to run
@@ -489,6 +491,17 @@ if __name__ == "__main__":
             samples, graph_sizes = model.sample(64)
             samples = samples.cpu()
             save_image(samples.view(-1, 1, 28, 28), args.samples)
+
+            means, graph_sizes_means = model.sample(graph_sizes=torch.arange(17,29), mask=False, z=torch.zeros(29-17, args.latent_dim), return_mean=True)
+            n = len(means)
+            
+            fig, axs = plt.subplots(2, n//2, figsize=(16, 6))
+            for i, ax in enumerate(axs.flatten()):
+                ax.imshow(means[i], cmap='binary')
+                ax.set_title(f'{17+i}')
+            fig.tight_layout()
+            fig.savefig('assets/mean_samples.pdf', bbox_inches='tight')
+
 
             fig, axs = plt.subplots(8, np.ceil(len(samples)/8).astype(int), figsize=(16, 16))
             for i, ax in enumerate(axs.flatten()):
@@ -516,6 +529,7 @@ if __name__ == "__main__":
     
     if (args.mode == 'eval') or (args.mode == 'train'):
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+
 
         # Generate samples
         model.eval()
@@ -553,15 +567,17 @@ if __name__ == "__main__":
             ('GNN', gnn_adjs),
         )
 
+        colors = ["red", "blue", "green"]
+
         for t, A in named_data:
             print(t)
             print(evaluate(A))
 
         fig, axs = plt.subplots(1, 3, figsize=(12, 4))
         for i, fn in enumerate((plot_node_degree_histogram, plot_clustering_coefficient_histogram, plot_eigenvector_centrality)):
-            fn(*named_data, ax=axs[i], mean_over_graph=False, alpha=0.5)
+            fn(*named_data, ax=axs[i], colors=colors, mean_over_graph=False, alpha=0.5)
         fig.tight_layout()
-        fig.savefig('assets/results_plot.pdf', bbox_inches='tight')
+        fig.savefig('assets/results_plot.pdf', bbox_inches='tight', dpi=300)
         plt.show()
 
 
