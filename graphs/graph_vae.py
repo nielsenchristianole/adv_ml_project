@@ -2,11 +2,20 @@ import pdb
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
+import networkx as nx
 import numpy as np
 import torch
 import torch.distributions as td
 import torch.nn as nn
 import torch.utils.data
+from erdos_baseline import erdos_model
+from eval import (
+    evaluate,
+    get_dataset_adjacency_matrix,
+    plot_clustering_coefficient_histogram,
+    plot_eigenvector_centrality,
+    plot_node_degree_histogram,
+)
 from graph_vae_node import (
     BernoulliNodeDecoder,
     GaussianEncoderNodeMessagePassing,
@@ -21,6 +30,13 @@ from torch_geometric.datasets import TUDataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.utils import to_dense_adj, to_dense_batch
 from tqdm import tqdm
+
+MUTAG_adjcs = get_dataset_adjacency_matrix()
+
+# this is a function for sampling the number of nodes in a graph
+global SAMPLES_GRAPH_SIZE_FROM_DATA
+size, count = np.unique((MUTAG_adjcs.sum(axis=1) >= 1).sum(axis=1), return_counts=True)
+SAMPLES_GRAPH_SIZE_FROM_DATA = lambda num_samples: np.random.choice(size, p=count/count.sum(), size=num_samples)
 
 
 class GaussianPrior(nn.Module):
@@ -214,7 +230,28 @@ class BernoulliDecoder(nn.Module):
         super(BernoulliDecoder, self).__init__()
         self.decoder_net = decoder_net
 
-    def forward(self, z, batch=None, *, batch_size: int=1, sizes: torch.IntTensor=None):
+
+    def embed_graph_size(self, graph_size, target=None):
+        """
+        unpack bits of graph_size into a tensor of shape [batch, 5]
+
+        Parameters:
+        graph_size: [torch.Tensor] (int)
+           A tensor of dimension `(batch_size)` containing the number of nodes in each graph.
+        """
+
+        if isinstance(graph_size, torch.Tensor):
+            graph_size = graph_size.numpy()
+
+        assert isinstance(graph_size, np.ndarray), 'graph_size must be a numpy array'
+        assert graph_size.ndim == 1, 'graph_size must be a 1D array'
+
+        graph_size = graph_size[:, None].astype(np.uint8)
+        graph_size = np.unpackbits(graph_size, axis=1)[:,-5:] # hard coded 5 bits (max 28 nodes)
+        graph_size = torch.tensor(graph_size).to(target)
+        return graph_size
+
+    def forward(self, z, graph_sizes):
         """
         Given a batch of latent variables, return a Bernoulli distribution over the data space.
 
@@ -222,32 +259,14 @@ class BernoulliDecoder(nn.Module):
         z: [torch.Tensor] 
            A tensor of dimension `(batch_size, M)`, where M is the dimension of the latent space.
         """
+        graph_sizes = self.embed_graph_size(graph_sizes, z)
+        z = torch.cat([z, graph_sizes], dim=1)
+
         logits = self.decoder_net(z)
-        if batch is not None:
-            # sample using the batch information (for training I guess)
-            unique, count = torch.unique(batch, return_counts=True)
-        elif sizes is not None:
-            # sample using the given sizes
-            unique = torch.arange(len(sizes))
-            count = sizes
-        else:
-            # random sampling
-            unique = torch.arange(batch_size)
-            global SAMPLES_GRAPH_SIZE_FROM_DATA
-            count = torch.from_numpy(SAMPLES_GRAPH_SIZE_FROM_DATA(batch_size))
-
-        # make logits mask for each graph based on unique and count. where unique is which graph and count is how many nodes in each graph
-        # NOTE: count is mabe a wierd name - it denotes the sizes of the graphs, i.e. the 'count' of nodes in each graph.
-        # mask = torch.zeros(len(unique), 28, 28, dtype=torch.bool)
-        # for u in unique:
-        #     mask[u, :count[u], :count[u]] = 1
-
-        # logits = torch.where(mask, logits, torch.zeros_like(logits))
-        # Set upper triangular part of the logits to 0
-        # with torch.no_grad():
-        #     logits = torch.tril(logits, diagonal=-1)    
+        probs = torch.sigmoid(logits)
+        probs = torch.tril(probs, diagonal=-1)
         
-        return td.Independent(td.Bernoulli(logits=logits), 2)
+        return td.Independent(td.Bernoulli(probs=probs), 2)
     
 
 class VAE(nn.Module):
@@ -270,45 +289,40 @@ class VAE(nn.Module):
         self.decoder = decoder
         self.encoder = encoder
 
+
     def elbo(self,  x, edge_index, batch):
         """
         Compute the ELBO for the given batch of data.
 
         Parameters:
         x: [torch.Tensor] 
-           A tensor of dimension `(batch_size, feature_dim1, feature_dim2, ...)`
-           n_samples: [int]
-           Number of samples to use for the Monte Carlo estimate of the ELBO.
+           A tensor of dimension `(batch_size, feature_dim)`
+        edge_index: [torch.Tensor]
+           A tensor of dimension `(2, num_edges)`
+        batch: [torch.Tensor]
+           A tensor of dimension `(num_nodes)`
         """
         # q = self.encoder(x, edge_index, batch)
+
 
         # elbo = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0) # dim: 64
         q = self.encoder(x, edge_index, batch)  # returns: distribution of shape [batch=100, latent_dim=1]
         z = q.rsample() # dim: batch, latent_dim:  100, 1
 
         A = to_dense_adj(edge_index, batch) # dim: 100, 28, 28
+        A = torch.tril(A, diagonal=-1) # dim: 100, 28, 28
 
-        # permute A 100 times but only inside the mask
-        # create 0 matrix of shape 5, 100,28,28
-        # A_perm = torch.zeros(5, len(A), 28, 28)
-        # unique, count = torch.unique(batch, return_counts=True)
-        # for i in range(len(A)):
-        #     for j in range(len(A_perm)):
-        #         perm = torch.randperm(count[i])
-        #         A_perm[j,i,:count[i], :count[i]] = A[i, perm,:][:,perm]
 
-        # A_perm = torch.tril(A_perm, diagonal=-1) # dim: 5, 100, 28, 28
+        _, graph_sizes = batch.unique(return_counts=True)
 
-        log_prob = self.decoder(z, batch).log_prob(A) # 5, 100
-        log_prob = torch.max(log_prob,axis=0)[0]
+        log_prob = self.decoder(z, graph_sizes).log_prob(A) # 100
 
-    
         # kl divergence estimation
-        kl = td.kl_divergence(q, self.prior()).sum(-1)
+        kl = td.kl_divergence(q, self.prior())
 
-        return torch.mean(log_prob - kl, dim=0)
+        return (log_prob - kl).mean()
 
-    def sample(self, n_samples=1, *, sizes: torch.IntTensor=None, return_mean: bool=False):
+    def sample(self, n_samples=None, return_mean: bool=False, graph_sizes=None, z=None, mask=True):
         """
         Sample from the model.
         
@@ -316,18 +330,27 @@ class VAE(nn.Module):
         n_samples: [int]
            Number of samples to generate.
         """
-        z = self.prior().sample(torch.Size([n_samples]))
-        dist: td.Distribution = self.decoder(z, batch_size=n_samples, sizes=sizes)
+        
+        n_samples = n_samples or 1 # overwritten if graph_sizes is not None
+        graph_sizes = SAMPLES_GRAPH_SIZE_FROM_DATA(n_samples) if graph_sizes is None else graph_sizes
+
+        if z is None: z = self.prior().sample(torch.Size([len(graph_sizes)]))
+        else: assert z.shape[0] == len(graph_sizes), 'z must have the same size as graph_sizes'
+        
+        posterior: td.Distribution = self.decoder(z, graph_sizes)
 
         if return_mean:
-            return dist.mean
+            sample = posterior.mean
+        else:
+            sample = posterior.sample()
 
-        # import matplotlib.pyplot as plt
-        # plt.ecdf(dist.mean.flatten().tolist())
-        # plt.scatter(z[:,0], z[:,1])
+        sample = sample + sample.transpose(1, 2)
 
-        sample = dist.sample()
-        return sample
+        if mask:
+            for i,N in enumerate(graph_sizes):
+                sample[i, N:] = 0
+                sample[i, :, N:] = 0
+        return sample, graph_sizes
     
     def mean_sample(self, n_samples=1):
         """
@@ -351,7 +374,7 @@ class VAE(nn.Module):
         return -self.elbo( x, edge_index, batch)
 
 
-def train(model, criterion, optimizer, train_loader, epochs, device):
+def train(model, optimizer, train_loader, epochs, device):
     """
     Train a VAE model.
 
@@ -405,7 +428,7 @@ if __name__ == "__main__":
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--encoder', type=str, default='mp_node', choices=['mm','conv','mp_node'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus'], help='Prior distribution (default: %(default)s)')
-    parser.add_argument('--model', type=str, default='graphs/model_mm.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser.add_argument('--model', type=str, default='graphs/model_conv.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=1000, metavar='N', help='number of epochs to train (default: %(default)s)')
@@ -434,7 +457,8 @@ if __name__ == "__main__":
     prior = GaussianPrior(M)
 
     decoder_net = nn.Sequential(
-        nn.Linear(M, 10),
+        # nn.Linear(M, 10),
+        nn.Linear(M + 5, 10),
         nn.ReLU(),
         nn.Linear(10, 100),
         nn.ReLU(),
@@ -454,7 +478,7 @@ if __name__ == "__main__":
     elif args.encoder == 'mp_node':
         encoder = GaussianEncoderNodeMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M)
     else:
-        encoder = GaussianEncoderMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M, dropout=0.)
+        encoder = GaussianEncoderMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M, dropout=0.03)
     if args.encoder == 'mp_node':
         model = VAENode(prior, decoder, encoder).to(device)
     else:
@@ -462,28 +486,62 @@ if __name__ == "__main__":
 
     # Choose mode to run
     if args.mode == 'train':
-        # Loss function
-        criterion = torch.nn.BCEWithLogitsLoss()
         # Optimizer
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
 
         # Train model
-        train(model, criterion, optimizer, dataloader, args.epochs, device)
+        train(model, optimizer, dataloader, args.epochs, device)
 
         # Save model
         torch.save(model.state_dict(), args.model)
 
     elif args.mode == 'sample':
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
-        
         # Generate samples
         model.eval()
         with torch.no_grad():
-            samples = (model.sample(64)).cpu() 
-            save_image(samples.view(64, 1, 28, 28), args.samples)
+            samples, graph_sizes = model.sample(64)
+            samples = samples.cpu()
+            save_image(samples.view(-1, 1, 28, 28), args.samples)
+
+            means, graph_sizes_means = model.sample(graph_sizes=torch.arange(17,29), mask=False, z=torch.zeros(29-17, args.latent_dim), return_mean=True)
+            n = len(means)
+            
+            fig, axs = plt.subplots(2, n//2, figsize=(16, 6))
+            for i, ax in enumerate(axs.flatten()):
+                ax.imshow(means[i], cmap='binary')
+                ax.set_title(f'{17+i}')
+            fig.tight_layout()
+            fig.savefig('assets/mean_samples.pdf', bbox_inches='tight')
+
+
+            fig, axs = plt.subplots(8, np.ceil(len(samples)/8).astype(int), figsize=(16, 16))
+            for i, ax in enumerate(axs.flatten()):
+                G = nx.from_numpy_array(samples[i, :graph_sizes[i], :graph_sizes[i]].detach().numpy())
+                nx.draw(G, ax=ax, node_size=10, node_color='black', edge_color='black')
+                ax.set_title(f'size {graph_sizes[i]}')
+            fig.tight_layout()
+            # plt.show()
+            plt.savefig('assets/samples_draw.pdf', bbox_inches='tight')
+            plt.cla()
+        
+        
+            graphs, nx_graphs = erdos_model.generate(64, return_nx_graphs=True)
+            fig, axs = plt.subplots(8, np.ceil(len(graphs)/8).astype(int), figsize=(16, 16))
+            for i, ax in enumerate(axs.flatten()):
+                G = nx_graphs[i]
+                nx.draw(G, ax=ax, node_size=10, node_color='black', edge_color='black')
+                ax.set_title(f'size {G.number_of_nodes()}')
+            fig.tight_layout()
+            # plt.show()
+            plt.savefig('assets/erdos_samples_draw.pdf', bbox_inches='tight')
+            plt.cla()
+        
+
     
     if (args.mode == 'eval') or (args.mode == 'train'):
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
+
 
         # Generate samples
         model.eval()
@@ -495,23 +553,7 @@ if __name__ == "__main__":
         plt.show()
 
 
-        from erdos_baseline import erdos_model
-        from eval import (
-            evaluate,
-            get_dataset_adjacency_matrix,
-            plot_clustering_coefficient_histogram,
-            plot_eigenvector_centrality,
-            plot_node_degree_histogram,
-        )
-
-        MUTAG_adjcs = get_dataset_adjacency_matrix()
-
-        # this is a function for sampling the number of nodes in a graph
-        global SAMPLES_GRAPH_SIZE_FROM_DATA
-        size, count = np.unique((MUTAG_adjcs.sum(axis=1) >= 1).sum(axis=1), return_counts=True)
-        SAMPLES_GRAPH_SIZE_FROM_DATA = lambda num_samples: np.random.choice(size, p=count/count.sum(), size=num_samples)
-
-        gnn_adjs = model.sample(1000, return_mean=False).detach().cpu().numpy().astype(bool)
+        gnn_adjs = model.sample(1000, return_mean=False)[0].detach().cpu().numpy().astype(bool)
 
         # results = list()
         # for t in tqdm(np.linspace(0, 1, 10)):
@@ -537,15 +579,17 @@ if __name__ == "__main__":
             ('GNN', gnn_adjs),
         )
 
+        colors = ["red", "blue", "green"]
+
         for t, A in named_data:
             print(t)
             print(evaluate(A))
 
         fig, axs = plt.subplots(1, 3, figsize=(12, 4))
         for i, fn in enumerate((plot_node_degree_histogram, plot_clustering_coefficient_histogram, plot_eigenvector_centrality)):
-            fn(*named_data, ax=axs[i], mean_over_graph=False, alpha=0.5)
+            fn(*named_data, ax=axs[i], colors=colors, mean_over_graph=False, alpha=0.5)
         fig.tight_layout()
-        fig.savefig('assets/results_plot.pdf', bbox_inches='tight')
+        fig.savefig('assets/results_plot.pdf', bbox_inches='tight', dpi=300)
         plt.show()
 
 

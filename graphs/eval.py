@@ -73,7 +73,7 @@ def evaluate(new_adjacency_matrix: np.ndarray) -> tuple[float, float, float]:
     )
 
 
-def plot_node_degree_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.Axes]=None, set_legent: bool=True, mean_over_graph: bool=False, **kwargs):
+def plot_node_degree_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.Axes]=None, set_legent: bool=True, mean_over_graph: bool=False, colors=None, **kwargs):
     """Give a list of tuples (label, adjacency_matrix), plot the node degree histogram."""
 
     if ax is None:
@@ -83,14 +83,17 @@ def plot_node_degree_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.A
         density=True
     ) | kwargs
 
-    for label, adjacency_matrix in data:
+    if colors is None:
+        colors = [None]*len(data)
+
+    for (label, adjacency_matrix), color in zip(data, colors):
         assert len(adjacency_matrix.shape) == 3
         graphs = graph_from_numpy_batch(adjacency_matrix)
         if mean_over_graph:
             degrees = [np.mean([d for n, d in gr.degree()]) for gr in graphs]
         else:
             degrees = [d for gr in graphs for n, d in gr.degree()]
-        ax.hist(degrees, label=label, **kwargs)
+        ax.hist(degrees, label=label, color=color, **kwargs)
 
     if set_legent:
         ax.legend()
@@ -101,7 +104,7 @@ def plot_node_degree_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.A
     return ax
 
 
-def plot_clustering_coefficient_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.Axes]=None, set_legent: bool=True, mean_over_graph: bool=False, **kwargs):
+def plot_clustering_coefficient_histogram(*data: tuple[str, np.ndarray], ax: Optional[plt.Axes]=None, set_legent: bool=True, mean_over_graph: bool=False, colors=None, **kwargs):
     """Give a list of tuples (label, adjacency_matrix), plot the node degree histogram."""
 
     if ax is None:
@@ -111,7 +114,10 @@ def plot_clustering_coefficient_histogram(*data: tuple[str, np.ndarray], ax: Opt
         density=True
     ) | kwargs
 
-    for label, adjacency_matrix in data:
+    if colors is None:
+        colors = [None]*len(data)
+
+    for (label, adjacency_matrix), color in zip(data, colors):
         assert len(adjacency_matrix.shape) == 3
         graphs = graph_from_numpy_batch(adjacency_matrix)
         if mean_over_graph:
@@ -119,7 +125,7 @@ def plot_clustering_coefficient_histogram(*data: tuple[str, np.ndarray], ax: Opt
         else:
             clustering_coefficients = [nx.clustering(gr) for gr in graphs]
             clustering_coefficients = np.concatenate([np.array(list(d.values())) for d in clustering_coefficients])
-        ax.hist(clustering_coefficients, label=label, **kwargs)
+        ax.hist(clustering_coefficients, label=label, color=color, **kwargs)
 
     if set_legent:
         ax.legend()
@@ -140,7 +146,7 @@ def calculate_eigenvector_centrality(graph: nx.Graph) -> dict[int, float]:
     raise nx.PowerIterationFailedConvergence
 
 
-def plot_eigenvector_centrality(*data: tuple[str, np.ndarray], ax: Optional[plt.Axes]=None, set_legent: bool=True, mean_over_graph: bool=False, **kwargs):
+def plot_eigenvector_centrality(*data: tuple[str, np.ndarray], ax: Optional[plt.Axes]=None, set_legent: bool=True, mean_over_graph: bool=False, colors=None, **kwargs):
     """Give a list of tuples (label, adjacency_matrix), plot the node degree histogram."""
 
     if ax is None:
@@ -150,7 +156,10 @@ def plot_eigenvector_centrality(*data: tuple[str, np.ndarray], ax: Optional[plt.
         density=True
     ) | kwargs
 
-    for label, adjacency_matrix in data:
+    if colors is None:
+        colors = [None]*len(data)
+
+    for (label, adjacency_matrix), color in zip(data, colors):
         assert len(adjacency_matrix.shape) == 3
         graphs = graph_from_numpy_batch(adjacency_matrix)
         eigenvector_centralities = [calculate_eigenvector_centrality(gr) for gr in graphs]
@@ -158,7 +167,7 @@ def plot_eigenvector_centrality(*data: tuple[str, np.ndarray], ax: Optional[plt.
             eigenvector_centralities = [np.array(list(d.values())).mean() for d in eigenvector_centralities]
         else:
             eigenvector_centralities = np.concatenate([np.array(list(d.values())) for d in eigenvector_centralities])
-        ax.hist(eigenvector_centralities, label=label, **kwargs)
+        ax.hist(eigenvector_centralities, label=label, color=color, **kwargs)
 
     if set_legent:
         ax.legend()
