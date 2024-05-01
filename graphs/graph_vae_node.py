@@ -62,7 +62,7 @@ class GaussianEncoderNodeMessagePassing(nn.Module):
         # Input network
         self.input_net = torch.nn.Sequential(
             torch.nn.Linear(self.node_feature_dim, self.state_dim),
-            torch.nn.Dropout(0.1),
+            #torch.nn.Dropout(0.1),
             torch.nn.ReLU()
             )
 
@@ -70,7 +70,7 @@ class GaussianEncoderNodeMessagePassing(nn.Module):
         self.message_net = torch.nn.ModuleList([
             torch.nn.Sequential(
                 torch.nn.Linear(self.state_dim, self.state_dim),
-                torch.nn.Dropout(0.1),
+                #torch.nn.Dropout(0.1),
                 torch.nn.ReLU()
             ) for _ in range(num_message_passing_rounds)])
 
@@ -78,7 +78,7 @@ class GaussianEncoderNodeMessagePassing(nn.Module):
         self.update_net = torch.nn.ModuleList([
             torch.nn.Sequential(
                 torch.nn.Linear(self.state_dim, self.state_dim),
-                torch.nn.Dropout(0.1),
+                #torch.nn.Dropout(0.1),
                 torch.nn.ReLU(),
             ) for _ in range(num_message_passing_rounds)])
         
@@ -125,12 +125,9 @@ class GaussianEncoderNodeMessagePassing(nn.Module):
             state = state + self.update_net[r](aggregated)
 
         # Aggretate: Sum node features
-        node_embeddings = []
-        for node_embed in state:
-            mean, std = torch.chunk(self.encoder_net(node_embed), 2, dim=-1)
-            node_embeddings.append(td.Independent(td.Normal(loc=mean, scale=torch.exp(std)), 1))
+        means, stds = torch.chunk(self.encoder_net(state), 2, dim=-1)
 
-        return node_embeddings
+        return td.Independent(td.Normal(loc=means, scale=torch.exp(stds)), 1)
     
 class BernoulliNodeDecoder(nn.Module):
     def __init__(self, decoder_net):
@@ -156,7 +153,7 @@ class BernoulliNodeDecoder(nn.Module):
         
         logits= torch.sigmoid((rx*tx).sum(1) + self.bias)
         
-        return [td.Bernoulli(logits=logit) for logit in logits]
+        return td.Independent(td.Bernoulli(logits=logits), 1) # 2
     
 class VAENode(nn.Module):
     """
@@ -190,11 +187,13 @@ class VAENode(nn.Module):
         # elbo = torch.mean(self.decoder(z).log_prob(x) - td.kl_divergence(q, self.prior()), dim=0) # dim: 64
         
         qs = self.encoder(x, edge_index, batch)  # returns: distribution of all latent variables for all nodes
+        z = qs.rsample() # sample from the distribution
         nodes_numbers = torch.arange(len(x))
 
         # Compute the ELBO for each graph.
         log_probs = torch.zeros(len(torch.unique(batch)))
         kls = torch.zeros(len(torch.unique(batch)))
+        kls_raw = td.kl_divergence(qs, self.prior())
         for b in torch.unique(batch):  
             x_graph = x[batch == b]
             #qs_graph = qs[batch == b] ! not possible for list
@@ -216,19 +215,17 @@ class VAENode(nn.Module):
             for rx, tx in b_edge_index.T:
                 targets[(pairs[:, 0] == rx) & (pairs[:, 1] == tx)] = 1
                 
-            z = torch.stack([qs[idx].rsample() for idx in qs_idx])
+            z_b = z[qs_idx]
 
-            link_probabilitys = self.decoder(z[pairs[:, 0]], z[pairs[:, 1]])
-            log_prob_list = torch.stack([link_probabilitys[i].log_prob(targets[i])  for i in range(len(link_probabilitys))])
+            link_probabilitys = self.decoder(z_b[pairs[:, 0]], z_b[pairs[:, 1]])
+            log_prob_list = link_probabilitys.log_prob(targets)
             
-            kl = torch.stack([td.kl_divergence(qs[idx], self.prior()) for idx in qs_idx])
-
-            log_probs[b] = torch.mean(log_prob_list)
-            kls[b] = torch.mean(kl)
+            log_probs[b] = log_prob_list
+            kls[b] = torch.sum(kls_raw[qs_idx])
 
         return torch.mean(log_probs - kls, dim=0)
 
-    def sample(self, n_samples=1, *, sizes: torch.IntTensor=None):
+    def sample(self, n_samples=1, *, sizes: torch.IntTensor=None, return_mean: bool=False):
         """
         Sample from the model.
         
@@ -236,7 +233,18 @@ class VAENode(nn.Module):
         n_samples: [int]
            Number of samples to generate.
         """
-        return None
+        z = self.prior().sample(torch.Size([n_samples]))
+        dist: td.Distribution = self.decoder(z, batch_size=n_samples, sizes=sizes)
+
+        if return_mean:
+            return dist.mean
+
+        # import matplotlib.pyplot as plt
+        # plt.ecdf(dist.mean.flatten().tolist())
+        # plt.scatter(z[:,0], z[:,1])
+
+        sample = dist.sample()
+        return sample
     
     def forward(self,  x, edge_index, batch):
         """
