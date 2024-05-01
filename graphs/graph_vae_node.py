@@ -7,6 +7,13 @@ import torch
 import torch.distributions as td
 import torch.nn as nn
 import torch.utils.data
+from eval import (
+    evaluate,
+    get_dataset_adjacency_matrix,
+    plot_clustering_coefficient_histogram,
+    plot_eigenvector_centrality,
+    plot_node_degree_histogram,
+)
 from scipy import stats
 from scipy.stats import kde
 from sklearn.decomposition import PCA
@@ -17,7 +24,12 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.utils import to_dense_adj, to_dense_batch
 from tqdm import tqdm
 
+MUTAG_adjcs = get_dataset_adjacency_matrix()
 
+# this is a function for sampling the number of nodes in a graph
+global SAMPLES_GRAPH_SIZE_FROM_DATA
+size, count = np.unique((MUTAG_adjcs.sum(axis=1) >= 1).sum(axis=1), return_counts=True)
+SAMPLES_GRAPH_SIZE_FROM_DATA = lambda num_samples: np.random.choice(size, p=count/count.sum(), size=num_samples)
 class GaussianPrior(nn.Module):
     def __init__(self, M):
         """
@@ -128,7 +140,7 @@ class GaussianEncoderNodeMessagePassing(nn.Module):
         means, stds = torch.chunk(self.encoder_net(state), 2, dim=-1)
 
         return td.Independent(td.Normal(loc=means, scale=torch.exp(stds)), 1)
-    
+  
 class BernoulliNodeDecoder(nn.Module):
     def __init__(self, decoder_net):
         """
@@ -221,11 +233,11 @@ class VAENode(nn.Module):
             log_prob_list = link_probabilitys.log_prob(targets)
             
             log_probs[b] = log_prob_list
-            kls[b] = torch.sum(kls_raw[qs_idx])
+            kls[b] = torch.sum(kls_raw[qs_idx]) # sum vs mean?
 
         return torch.mean(log_probs - kls, dim=0)
 
-    def sample(self, n_samples=1, *, sizes: torch.IntTensor=None, return_mean: bool=False):
+    def sample(self, n_samples=None, return_mean: bool=False, graph_sizes=None, z=None, mask=True):
         """
         Sample from the model.
         
@@ -233,18 +245,73 @@ class VAENode(nn.Module):
         n_samples: [int]
            Number of samples to generate.
         """
-        z = self.prior().sample(torch.Size([n_samples]))
-        dist: td.Distribution = self.decoder(z, batch_size=n_samples, sizes=sizes)
+        
+        n_samples = n_samples or 1 # overwritten if graph_sizes is not None
+        graph_sizes = SAMPLES_GRAPH_SIZE_FROM_DATA(n_samples) if graph_sizes is None else graph_sizes
 
+        
+        samples_nodes = []
+        for i in range(n_samples):
+            nodes = torch.zeros(graph_sizes[i], 2)
+            for j in range(graph_sizes[i]):
+                nodes[j]=self.prior().sample()
+
+            samples_nodes.append(nodes)
+
+
+        # use decoder
+        posteriors = []
+        for i in range(n_samples):
+            x = samples_nodes[i]
+            pairs = torch.combinations(torch.arange(len(x)))
+            link_probabilitys = self.decoder(x[pairs[:, 0]], x[pairs[:, 1]])
+            posteriors.append(link_probabilitys)
+
+        samples = []
         if return_mean:
-            return dist.mean
+            for i in range(n_samples):
+                num_nodes = len(samples_nodes[i])
+                pairs = torch.combinations(torch.arange(num_nodes))
+                # Create an adjacency matrix
+                adjacency_matrix = torch.zeros(len(x), len(x))
+                adjacency_matrix[pairs[:, 0], pairs[:, 1]] = posteriors[i].mean
+                adjacency_matrix[pairs[:, 1], pairs[:, 0]] = posteriors[i].mean
+                samples.append(adjacency_matrix)
+        else:
+            for i in range(n_samples):
+                num_nodes = len(samples_nodes[i])
+                pairs = torch.combinations(torch.arange(num_nodes))
+                # Create an adjacency matrix
+                adjacency_matrix = torch.zeros(num_nodes,num_nodes)
+                adjacency_matrix[pairs[:, 0], pairs[:, 1]] = posteriors[i].sample()
+                adjacency_matrix[pairs[:, 1], pairs[:, 0]] = posteriors[i].sample()
+                samples.append(adjacency_matrix)
+        for sample in samples:
+            sample = torch.tril(sample, diagonal=-1)
+            sample = sample + sample.T
 
-        # import matplotlib.pyplot as plt
-        # plt.ecdf(dist.mean.flatten().tolist())
-        # plt.scatter(z[:,0], z[:,1])
+        # if mask:
+        #     for i,N in enumerate(graph_sizes):
+        #         sample[i][N:] = 0
+        #         sample[i][N:] = 0
 
-        sample = dist.sample()
-        return sample
+        import torch.nn.functional as F
+
+        # Get the maximum size for padding
+        max_size = 28
+
+        # Pad each sample in the tensor
+        padded_samples = []
+        for sample in samples:
+            padding = (0, max_size - sample.size(1), 0, max_size - sample.size(0))  # pad right and bottom
+            padded_sample = F.pad(sample, padding, "constant", 0)  # pad with zeros
+            padded_samples.append(padded_sample)
+
+        # Convert list of padded samples back to tensor
+        padded_samples_tensor = torch.stack(padded_samples)
+
+        return padded_samples_tensor, graph_sizes
+        return samples, graph_sizes
     
     def forward(self,  x, edge_index, batch):
         """

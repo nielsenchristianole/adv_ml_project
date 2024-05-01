@@ -1,4 +1,6 @@
 import pdb
+import random
+from itertools import permutations
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -262,7 +264,7 @@ class BernoulliDecoder(nn.Module):
         graph_sizes = self.embed_graph_size(graph_sizes, z)
         z = torch.cat([z, graph_sizes], dim=1)
 
-        logits = self.decoder_net(z)
+        logits = self.decoder_net(z) # batch, 28,28
         probs = torch.sigmoid(logits)
         probs = torch.tril(probs, diagonal=-1)
         
@@ -425,10 +427,10 @@ if __name__ == "__main__":
     from torchvision import datasets, transforms
     from torchvision.utils import make_grid, save_image
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='train', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--mode', type=str, default='eval', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
     parser.add_argument('--encoder', type=str, default='mp_node', choices=['mm','conv','mp_node'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus'], help='Prior distribution (default: %(default)s)')
-    parser.add_argument('--model', type=str, default='graphs/model_conv.pt', help='file to save model to or load model from (default: %(default)s)')
+    parser.add_argument('--model', type=str, default='model_mp_node.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
     parser.add_argument('--epochs', type=int, default=1000, metavar='N', help='number of epochs to train (default: %(default)s)')
