@@ -42,7 +42,7 @@ class GaussianPrior(nn.Module):
         super(GaussianPrior, self).__init__()
         self.M = M
         self.mean = nn.Parameter(torch.zeros(self.M), requires_grad=False)
-        self.std = nn.Parameter(torch.ones(self.M), requires_grad=False)
+        self.std = nn.Parameter(torch.ones(self.M), requires_grad=True)
 
     def forward(self):
         """
@@ -140,7 +140,61 @@ class GaussianEncoderNodeMessagePassing(nn.Module):
         means, stds = torch.chunk(self.encoder_net(state), 2, dim=-1)
 
         return td.Independent(td.Normal(loc=means, scale=torch.exp(stds)), 1)
-  
+
+class GaussianEncoderNodeConvolution(nn.Module):
+    def __init__(self, node_feature_dim, filter_length,M):
+        super().__init__()
+
+        # Define dimensions and other hyperparameters
+        self.node_feature_dim = node_feature_dim
+        self.filter_length = filter_length
+
+        # Define graph filter
+        self.h = torch.nn.Parameter(1e-5*torch.randn(filter_length))
+        self.h.data[0] = 1.
+
+        # State output network
+        self.output_net = torch.nn.Linear(self.node_feature_dim, 2*M)
+
+        self.cached = False
+
+    def forward(self, x, edge_index, batch):
+        """Evaluate neural network on a batch of graphs.
+
+        Parameters
+        ----------
+        x : torch.tensor (num_nodes x num_features)
+            Node features.
+        edge_index : torch.tensor (2 x num_edges)
+            Edges (to-node, from-node) in all graphs.
+        batch : torch.tensor (num_nodes)
+            Index of which graph each node belongs to.
+
+        Returns
+        ------- 
+        out : torch tensor (num_graphs)
+            Neural network output for each graph.
+
+        """
+
+        # Compute adjacency matrices and node features per graph
+        A = to_dense_adj(edge_index, batch)
+        X, idx = to_dense_batch(x, batch)
+ 
+        # ---------------------------------------------------------------------------------------------------------
+
+        # Implementation in spectral domain
+        L, U = torch.linalg.eigh(A)        
+        exponentiated_L = L.unsqueeze(2).pow(torch.arange(self.filter_length, device=L.device))
+        diagonal_filter = (self.h[None,None] * exponentiated_L).sum(2, keepdim=True)
+        node_state = U @ (diagonal_filter * (U.transpose(1, 2) @ X))
+
+        # ---------------------------------------------------------------------------------------------------------
+
+        # Output
+        mean, std = torch.chunk(self.output_net(node_state), 2, dim=-1)
+        return td.Independent(td.Normal(loc=mean, scale=torch.exp(std)), 1) #dim: 100, M
+
 class BernoulliNodeDecoder(nn.Module):
     def __init__(self, decoder_net):
         """

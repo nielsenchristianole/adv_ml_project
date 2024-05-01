@@ -20,6 +20,7 @@ from eval import (
 )
 from graph_vae_node import (
     BernoulliNodeDecoder,
+    GaussianEncoderNodeConvolution,
     GaussianEncoderNodeMessagePassing,
     VAENode,
 )
@@ -53,7 +54,7 @@ class GaussianPrior(nn.Module):
         super(GaussianPrior, self).__init__()
         self.M = M
         self.mean = nn.Parameter(torch.zeros(self.M), requires_grad=False)
-        self.std = nn.Parameter(torch.ones(self.M), requires_grad=False)
+        self.std = nn.Parameter(torch.ones(self.M), requires_grad=True)
 
     def forward(self):
         """
@@ -427,8 +428,8 @@ if __name__ == "__main__":
     from torchvision import datasets, transforms
     from torchvision.utils import make_grid, save_image
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', type=str, default='eval', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
-    parser.add_argument('--encoder', type=str, default='mp_node', choices=['mm','conv','mp_node'], help='Prior distribution (default: %(default)s)')
+    parser.add_argument('--mode', type=str, default='train', choices=['train', 'sample', 'eval'], help='what to do when running the script (default: %(default)s)')
+    parser.add_argument('--encoder', type=str, default='mm', choices=['mm','conv','mp_node','mp_conv'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--prior', type=str, default='gaus', choices=['gaus'], help='Prior distribution (default: %(default)s)')
     parser.add_argument('--model', type=str, default='model_mp_node.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
@@ -468,7 +469,7 @@ if __name__ == "__main__":
         nn.Unflatten(-1, (28, 28))
     )
 
-    if args.encoder == 'mp_node':
+    if args.encoder == 'mp_node' or args.encoder == 'mp_conv':
         decoder = BernoulliNodeDecoder(decoder_net)
     else:
         decoder = BernoulliDecoder(decoder_net)
@@ -477,11 +478,13 @@ if __name__ == "__main__":
     # Define VAE model
     if args.encoder == 'conv':
         encoder = GaussianEncoderConvolution(node_feature_dim, 5, M)
-    elif args.encoder == 'mp_node':
+    elif args.encoder == 'mp_node' or args.encoder == 'mp_conv':
         encoder = GaussianEncoderNodeMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M)
+    elif args.encoder == 'mp_conv':
+        encoder = GaussianEncoderNodeConvolution(node_feature_dim, 5, M)
     else:
         encoder = GaussianEncoderMessagePassing(node_feature_dim, state_dim, num_message_passing_rounds, M, dropout=0.03)
-    if args.encoder == 'mp_node':
+    if args.encoder == 'mp_node' or args.encoder == 'mp_conv':
         model = VAENode(prior, decoder, encoder).to(device)
     else:
         model = VAE(prior, decoder, encoder).to(device)
@@ -496,6 +499,8 @@ if __name__ == "__main__":
 
         # Save model
         torch.save(model.state_dict(), args.model)
+
+        print('asfdsaf',prior.mean, prior.std)
 
     elif args.mode == 'sample':
         model.load_state_dict(torch.load(args.model, map_location=torch.device(args.device)))
