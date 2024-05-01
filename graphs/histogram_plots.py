@@ -42,13 +42,13 @@ plot_eigenvector_centrality(*d, ax=axs[1, 1], **kwargs )
 plot_node_degree_histogram(*d, ax=axs[1, 2], **kwargs )
 
 fig.tight_layout()
-fig.savefig('graphs.pdf')
+fig.savefig('histograms.pdf')
 plt.show()
 
 
 tbl_data = list()
 for name, adj in data:
-    tbl_data.append([name, *[f'{100*e:.1f}%' for e in evaluate(adj)]])
+    tbl_data.append([name, *[fr'${100*e:.1f}\%$' for e in evaluate(adj)]])
 
 headers = ['', 'Novel', 'Unique', 'Novel+Unique']
 table = tabulate.tabulate(tbl_data, headers=headers, tablefmt='latex_raw')
