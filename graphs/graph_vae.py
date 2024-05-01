@@ -294,12 +294,13 @@ class VAE(nn.Module):
 
         # A_perm = torch.tril(A_perm, diagonal=-1) # dim: 5, 100, 28, 28
 
-        log_prob = self.decoder(z, batch).log_prob(A) # 5, 100
-        log_prob = torch.max(log_prob,axis=0)[0]
+        graf_dist = self.decoder(z, batch)
+        log_prob = graf_dist.log_prob(A) # 5, 100
+        # log_prob = torch.max(log_prob,axis=0)[0]
 
     
         # kl divergence estimation
-        kl = td.kl_divergence(q, self.prior()).sum(-1)
+        kl = td.kl_divergence(q, self.prior())#.sum(-1)
 
         return torch.mean(log_prob - kl, dim=0)
 
@@ -315,7 +316,9 @@ class VAE(nn.Module):
         dist: td.Distribution = self.decoder(z, batch_size=n_samples, sizes=sizes)
 
         if return_mean:
-            return dist.mean
+            out = dist.mean
+            out = torch.tril(out, diagonal=-1)
+            return (out + out.transpose(1, 2))
 
         # import matplotlib.pyplot as plt
         # plt.ecdf(dist.mean.flatten().tolist())
@@ -403,7 +406,7 @@ if __name__ == "__main__":
     parser.add_argument('--model', type=str, default='graphs/model_mm.pt', help='file to save model to or load model from (default: %(default)s)')
     parser.add_argument('--samples', type=str, default='samples.png', help='file to save samples in (default: %(default)s)')
     parser.add_argument('--device', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'], help='torch device (default: %(default)s)')
-    parser.add_argument('--epochs', type=int, default=1000, metavar='N', help='number of epochs to train (default: %(default)s)')
+    parser.add_argument('--epochs', type=int, default=30000, metavar='N', help='number of epochs to train (default: %(default)s)')
     parser.add_argument('--latent-dim', type=int, default=2, metavar='N', help='dimension of latent variable (default: %(default)s)')
 
     args = parser.parse_args()
@@ -454,7 +457,10 @@ if __name__ == "__main__":
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
         # Train model
-        train(model, criterion, optimizer, dataloader, args.epochs, device)
+        try:
+            train(model, criterion, optimizer, dataloader, args.epochs, device)
+        except KeyboardInterrupt:
+            print('Training interrupted, saving model.')
 
         # Save model
         torch.save(model.state_dict(), args.model)
@@ -475,10 +481,10 @@ if __name__ == "__main__":
         model.eval()
 
 
-        for data in dataloader:
-            out = model.encoder(data.x, data.edge_index, data.batch)
-        plt.scatter(*out.mean.detach().cpu().numpy().T)
-        plt.show()
+        # for data in dataloader:
+        #     out = model.encoder(data.x, data.edge_index, data.batch)
+        # plt.scatter(*out.mean.detach().cpu().numpy().T)
+        # plt.show()
 
 
         from erdos_baseline import erdos_model
@@ -497,10 +503,11 @@ if __name__ == "__main__":
         size, count = np.unique((MUTAG_adjcs.sum(axis=1) >= 1).sum(axis=1), return_counts=True)
         SAMPLES_GRAPH_SIZE_FROM_DATA = lambda num_samples: np.random.choice(size, p=count/count.sum(), size=num_samples)
 
-        gnn_adjs = model.sample(1000, return_mean=False).detach().cpu().numpy().astype(bool)
+        # gnn_adjs = model.sample(1000, return_mean=False).detach().cpu().numpy().astype(bool)
+        gnn_adjs = model.sample(1000, return_mean=True).detach().cpu().numpy()
 
         # results = list()
-        # for t in tqdm(np.linspace(0, 1, 10)):
+        # for t in tqdm(np.linspace(0, 1, 20)):
         #     A = (gnn_adjs > t)
         #     results.append(evaluate(A))
         # import matplotlib.pyplot as plt
@@ -508,6 +515,8 @@ if __name__ == "__main__":
         # for a in results:
         #     plt.plot(a)
         # plt.show()
+        gnn_adjs = (gnn_adjs > 0.5).astype(bool)
+        np.save('chris_mm.npy', gnn_adjs)
 
         erdos = erdos_model.generate(1000)
         ERDOS_adjcs = np.stack([
